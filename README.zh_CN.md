@@ -1,256 +1,34 @@
-# meta-pass — 把 FoloToy AI Passport 变成多固件设备
+**简体中文** | [English](README.md)
 
-[English](README.md) | 简体中文
+# ZION 多玩法小程序管理器
 
-meta-pass 是给 FoloToy AI Passport（ESP32-C3，8MB Flash）写的**多固件启动器**：
-烧一次 meta-pass，之后就能随时往三个槽位里装社区固件、在菜单里点选即启动，
-**不用再整片重刷**。想玩的玩法之间互相不覆盖，随时切回启动器。
+面向 ESP32-C3 AI Passport 的正式多固件启动器，派生自 alexwwang/meta-pass，
+并兼容 FoloToy 官方小程序安装协议。默认构建使用完整 Zion 产品界面，不再是
+先前的研究探针。
 
-<p align="center">
-  <img src="docs/assets/images/meta-pass-cover.png"
-       alt="meta-pass 启动器：槽位列表页，显示 SLOT 0-3 及 STORE DOWNLOAD"
-       width="800">
-</p>
+- 四行滚动玩法卡片、标题后置默认标记、电量进度及空间统计。
+- 持久化默认启动，支持启动窗口按键取消；软件返回或崩溃后安全回到启动器。
+- 玩法管理：运行一次、设置/取消默认、确认删除玩法及关联资源。
+- 设置：Wi-Fi 状态、带密码的临时配网热点、本地网页配置。
+- 使用官方玩法社区的小程序，经 BLE 下发请求，由设备下载、校验、重定位安装。
+- 精简复古绘制界面及中文字体，仅官方小程序码使用图片。
+- 安装失败或取消后回收 APP 和独占资源；提交状态不确定时保留已证实有效的安装。
 
-[\![FoloToy 玩法 #944 (v2)](https://img.shields.io/badge/%E7%8E%A9%E6%8F%9C%E7%AD%94-944-informational)](https://ai-passport.folotoy.cn/plays/944/)
-[\![FoloToy 玩法 #281](https://img.shields.io/badge/%E7%8E%A9%E6%8F%9C%E7%AD%94-281-informational)](https://ai-passport.folotoy.cn/plays/281)
->
-> **v2.1.0 发布说明**：[English](docs/release-notes/v2.1.0.md) · [中文](docs/release-notes/v2.1.0.zh_CN.md) —— 动态槽位表、覆盖安装与删除、MOCK 模式、phone 端跨重启窗口重试。
+开源地址：[cexer/folo-ai-passport-zion](https://github.com/cexer/folo-ai-passport-zion)。
+保留上游 MIT 许可及版权声明。
 
-官方机器一次只能跑一个固件，试社区的 plays 就得整片刷掉再刷回来。meta-pass
-把自己放在 factory 分区当启动器，把剩余 Flash 划成动态槽位池装子固件——可以随时 carve 新槽或让安装器从空闲空间自动分配：
+阅读[使用说明](docs/zion-user-guide.zh_CN.md)、[架构与兼容性](docs/zion.zh_CN.md)
+及[验证说明](docs/development/engineering/build-and-test.zh_CN.md)。激活 ESP-IDF
+5.5.3 后，Windows 可运行 `tools/build-zion.ps1`；固件、匹配 ELF/MAP 和清单
+输出到 `dist/`。刷写是独立的显式操作，使用 `tools/flash_zion.py`。交付前运行
+`./tools/validate.sh`。Linux/macOS 可运行 `tools/build-firmware.sh`，再执行
+`python3 tools/package_zion.py --build-dir build`。
+构建产物、下载依赖、本地设备配置及 `dist/` 均不进入 Git。
 
-```text
-0x000000   bootloader
-0x008000   分区表             nvs / phy_init（与官方一致）
-0x010000   factory (1.44MB)  ← meta-pass 启动器本体
-0x180000   slot pool         ← carve 槽生长于此；MPSC carve 记录在 0x35A000/0x35C000
-0x356000   cardid (16KB)     ← 设备身份，所有通道都不碰
-0x360000   free space        ← 新槽从此处自动分配
-0x7FE000   otadata           ← 启动器选槽后写这里再重启
-```
+硬件：ESP32-C3、8 MiB Flash、无 PSRAM。产品采用 2 MiB factory 布局。
+从旧版 1.44 MiB factory 迁移需要全新安装；相同布局的分段升级保留玩法和设置。
+`0x356000` 的身份分区受保护。Zion 替换 592，不同时保留两个独立启动器。
 
-选槽 = 写 otadata + 重启，由标准 2nd-stage bootloader 完成切换，无任何自定义
-bootloader 改动。
-
-## 功能
-
-- **动态槽位管理（dynslot）**：携带动态分区特性的设备上，安装页第 2 步变成实时槽位表——每个 carve 槽一行（偏移/大小/状态/名字/最大镜像尺寸），带**删除**按钮和**自动规划**行（从空闲池算出确切 carve 几何）。覆盖已占用槽需显式确认；删除先擦 4KB（防残留）、提交记录、重物化表。旧三槽设备保持原来的预选中默认。所有新增文案双语（EN/zh），语言切换实时重绘。详见
-[install-slot/README.zh_CN.md](install-slot/README.zh_CN.md)。
-- **三槽位切换**：列表显示每个槽位的固件名/版本/大小/SHA-256，点选即启动；
-  显示名在安装时写入（社区固件的 project_name 都是模板默认值，真名只能从安装通道带来）。
-- **双用槽位 2**：为空时可当作 littlefs 存储（如录音固件）；启动器检测到槽内无
-  合法镜像后自动挂载 FS，不再浪费 Flash。
-- **两种安装通道**：
-  - **USB 串口安装页**（本地文件推荐）：Chrome 打开本地页面，按住 UP 开机进 ROM
-    下载模式，直接写槽位；支持本地 `.bin`（Full 镜像自动解包）和 plays 市场链接
-    （自动下载并按商店公布的 SHA-256 校验）；
-  - **LAN 手机辅助安装**（不需要电脑/USB）：主列表选 STORE DOWNLOAD → 设备复用已存
-    WiFi 凭证直连，或开配网热点（`192.168.4.1`，屏幕显示随机 WPA2 密码，网页只收
-    WiFi 名/密码，无配对码）→ 联网后屏幕显示 QR 码、设备地址与 6 位配对码 → 用手机
-    扫码：metapass 网页模块完成市场搜索、analyze、下载与应用镜像提取，向设备提交
-    安装 offer；在设备上确认槽位（物理 OK 解锁上传）后手机经 LAN HTTP 流式上传，
-    设备边收边校验长度、SHA-256 与镜像结构。分析与解包始终不在设备上做。
-- **完整性校验**：magic、chip id、尺寸、segment 结构逐层校验，`esp_ota_end()` 权威
-  复核；SHA-256 在详情页可见，可与商店公布值对照。
-- **未签名警告**：未签名固件启动前弹出警告页，UP/DOWN 选择 BOOT / CANCEL，OK 单击
-  确认（默认停在 CANCEL）；恶意固件仍有完整 Flash 读写能力（无 eFuse 强制签名），
-  所以只装你信任来源的固件。
-- **永不困在子固件里**：未适配的子固件一律按"试运行"处理——任何重启（含断电）都
-  自动回启动器；适配过的固件可以长期驻留，并提供 OK 长按返回启动器。
-- **身份区安全**：`cardid` 分区被所有安装/烧录路径避开；`verify_firmware.py` 在
-  门禁里逐字节校验基线布局。
-
-<p align="center">
-  <img src="docs/assets/images/meta-pass-usb-installer.png"
-       alt="商店列表页：浏览玩法列表，点击弹出安装对话框"
-       width="800">
-  &nbsp;&nbsp;&nbsp;
-  <img src="docs/assets/images/meta-pass-wifi-import.png"
-       alt="WiFi 配网页：热点名 metapass-D886，提示打开 http://192.168.4.1"
-       width="800">
-  &nbsp;&nbsp;&nbsp;
-  <img src="docs/assets/images/meta-pass-unsigned-warning.png"
-       alt="安装确认弹窗：应用体积超槽位上限，选项置灰显示容量限制"
-       width="800">
-</p>
-
-## 快速开始
-
-### 1. 烧录 meta-pass（只做一次）
-
-从 Releases 下载 `meta-pass_v2.1.0.bin`，或自行构建（见下文「开发」）。然后：
-
-```bash
-python -m esptool --chip esp32c3 -p <串口> -b 460800 \
-    write-flash 0x0 meta-pass_v2.1.0.bin
-```
-
-只会烧到 `0x780000` 为止，不触碰 `cardid`（刷机工具默认只擦写覆盖区域；
-**不要**用 `erase-flash` 整片擦除已写入身份的设备）。
-
-### 2. 安装子固件
-
-**方式 A：USB 串口安装页**（不需要设备开热点）：
-
-用 Chrome 打开 **https://metapass.chuanxilu.net/**（托管页面 + API 代理，零安装）——
-或本地运行 `node tools/install-slot/server.mjs` → http://localhost:4191/。
-
-设备按住 UP 键开机 → 页面 Connect → 选槽位 → 选本地文件或粘贴 plays 链接 →
-Install → 断电重启。完整指南：[install-slot/README.zh_CN.md](install-slot/README.zh_CN.md)。
-
-**方式 B：LAN 手机辅助安装**（不需要电脑）：
-
-主列表选 STORE DOWNLOAD → 配网热点（或已存凭证自动直连；配网页只收 WiFi
-名/密码，无配对码）→ 联网后屏幕显示 QR 码、设备地址与 6 位配对码 → 用同一
-WiFi 下的手机扫码（或手动输入显示的网址 + 配对码）→ 在手机上选玩法；手机
-下载、校验并提取应用镜像后向设备提交安装 offer → 设备上 CONFIRM → 选目标
-槽位 → 物理确认解锁上传 → 双端同屏进度 → 断电重启即可启动。
-
-### 3. 启动
-
-主列表 UP/DOWN 选槽位，OK 进详情，BOOT 确认。未签名固件先弹警告页：UP/DOWN
-选 BOOT / CANCEL，OK 单击确认（默认停在 CANCEL）。
-
-## 按键操作
-
-| 页面 | UP/DOWN | OK 单击 | OK LONG（1.5 秒） |
-| --- | --- | --- | --- |
-| 主列表 | 选择槽位 | 进入详情 / 进商店下载 | — |
-| 槽位详情 | 选 BOOT/DELETE/BACK | 确认 | 返回主列表 |
-| 未签名警告 | 选 BOOT/CANCEL | 确认所选 | 取消（回详情页） |
-| 删除确认 | — | 取消 | 确认删除 |
-| 商店：配网 | 双击 UP = 更换 WiFi | — | 退出商店、回主列表 |
-| 商店：扫码配对 | — | — | 退出商店、回主列表 |
-| 商店：offer 确认 | 选 CONFIRM/BACK | 确认所选（BACK = 拒绝） | 拒绝 offer，回扫码页 |
-| 商店：选槽 | 选择槽位 | 物理确认——解锁手机上传 | 回 offer 确认页 |
-| 商店：进度 | — | 失败后回扫码页 | 上传中=进取消确认页；否则无动作 |
-| 商店：取消确认 | 选 CANCEL/BACK | 执行所选 | 不作取消，继续等 |
-| 商店：完成 | — | 回主列表 | — |
-| 商店：任意页（会话到期提示时） | — | 继续当前操作（续期） | 退出商店、回主列表 |
-
-取消确认页（上传中按 OK LONG 进入，后台上传不停）：**CANCEL** = 继续取消，
-半成品槽位作废；**BACK** = 不取消，回到进度页继续等。
-
-会话超时（默认 5 分钟，上传进行中自动延续）到期不强制关闭：屏上提示
-"Session timeout. OK = continue / LONG = exit store"，由用户选择继续或退出。
-超时时长可用 `CONFIG_META_STORE_SESSION_TIMEOUT_MS`（menuconfig）或运行时
-`meta_store_session_set_timeout_ms()` 配置（范围 30 秒～24 小时）。
-
-适配过的子固件内：OK LONG = 返回启动器（子固件自行挂接，见下节）。
-
-## 子固件适配（可选）
-
-子固件不改造也能跑（试运行模式）。想长期驻留 + OK 长按返回，包含
-`main/metapass_hook.h` 并实现两条：
-
-1. 自检通过后可选调用 `metapass_mark_valid()` 做签名自诊断（仅返回值——子固件为单次会话：
-   每次上电都回启动器列表页，OK 长按始终是可靠的退出途径）；
-2. 把 OK 键的 LONG（1.5 秒）事件接到 `metapass_return_to_launcher()`。
-
-签名徽章（可选）:`tools/signing/sign-firmware.sh <app.bin> [--egg-text "..."]` 在镜像后
-追加 ECDSA-P256 徽章（可附带彩蛋文本）;meta-pass 详情页显示 SIGNED 并跳过警告页
-直接启动。输入可以是裸 app 镜像,也可以是 **Full 合并镜像(bootloader+分区表+app,
-即市场可刷的发布格式)**——合并镜像的头部字节逐字节保留,只在 app 后追加 pad 与
-4KB 元数据 sector。私钥托管在 macOS Keychain（首次用 `tools/signing/bin/keychain-keygen` 生成，
-同时发布 `tools/signing/public.pem`)；签名私钥由 meta-pass 发布方持有——
-第三方开发者提交二进制给发布方签名，不能自签。
-
-## 目录结构
-
-| 路径 | 内容 |
-| --- | --- |
-| `main/` | 启动器 UI（`main.c`）、存储层（`meta_store`）、LAN 安装通道（`meta_store_net` WiFi/配网/httpd + `meta_store_install` 本地安装 HTTP/OTA + `meta_store_json` 有界 JSON 提取器 + `meta_install_model` 安装规则）、纯逻辑模块（`meta_image`/`meta_slots`/`meta_name`）、子固件 hook（`metapass_hook.h`） |
-| `components/bsp/` | 板级支持包（官方原样 + 显式 `BSP_BTN_LONG` 1.5 秒阈值） |
-| `install-slot/` | USB 串口安装页，线上地址 https://metapass.chuanxilu.net/（Cloudflare Pages：静态资源 + `_worker.js` API 代理） |
-| `tools/install-slot/` | `server.mjs` 本地服务器（直接服务规范的 `install-slot/` 页面——单一来源，零依赖） |
-| `tools/validate.sh` | 统一门禁：静态检查 + host tests + 固件构建 + 受保护布局校验 |
-| `tools/build-firmware.sh` | 一条命令的本地固件构建（自动找 ESP-IDF、编译、合并、校验、打印烧写指引，新手友好） |
-| `tests/` | host tests（C，纯逻辑模块，PC 上跑） |
-| `docs/assets/meta-pass-design.zh_CN.md` | 设计文档（含决策日志与验收清单） |
-
-## 开发
-
-### 本地编译固件（一条命令）
-
-```bash
-tools/build-firmware.sh
-```
-
-就够了。脚本会自动寻找 ESP-IDF v5.5.3（默认找 `~/esp/esp-idf-v5.5.3`，
-也可用 `--idf-path <目录>` 指定），完成编译、合并 8MB 完整镜像、受保护
-布局与**升级安全性**校验（NVS / cardid / ota_0-2 / otadata 区域必须保持擦除态），
-产物放入 `build/`。**唯一发布工件**是 `meta-pass_v<版本>.bin`（~1.1MB）:
-混合单文件——可引导本体（bootloader + 分区表 + phy + app）+ 44 字节
-`MPUPV2` 指纹尾段——同时服务市场安装（刷机工具原样写 0x0）与 USB 安装页
-升级（页面校验指纹后从本体切片升级段）。找不到 ESP-IDF 时会
-给出逐行安装命令。首次安装 ESP-IDF：
-
-```bash
-mkdir -p ~/esp
-git clone -b v5.5.3 --recursive https://github.com/espressif/esp-idf.git ~/esp/esp-idf-v5.5.3
-~/esp/esp-idf-v5.5.3/install.sh esp32c3
-```
-
-### 升级 launcher 而不丢数据
-
-分区布局已稳定,launcher 升级永远不需要碰用户数据。两条路径:
-
-- **USB 安装页(推荐)**——「7. 升级 launcher」章节:选择与市场分发**同一个文件**
-  `build/meta-pass_<版本>.bin`。页面校验 `MPUPV2` 指纹（完整性 SHA-256），
-  读回设备分区表逐字节比对（不一致即拒绝升级），再从文件本体写入
-  bootloader / 分区表 / app,并把 otadata 重置为擦除态。
-  NVS（存储数据:Wi-Fi 配置、应用内部状态）、`cardid` 与三个子固件槽位全程不碰。
-  已分发过的旧版 `MPUPV1` 升级容器仍然兼容。
-- **命令行**——等价的 esptool 命令（升级只写这四个区域;切勿把 8MB 完整
-  镜像刷到已有设备上）:
-
-```bash
-python -m esptool --port PORT write_flash 0x0 bootloader.bin 0x8000 partition-table.bin \
-  0x10000 FoloToy-AI-Passport.bin 0x7fe000 ota_data_initial.bin
-```
-
-**切勿**用 esptool 把发布文件原样刷到 0x0 给已有设备"升级":esptool 对每个写入
-扇区都会先擦除,而文件的覆盖范围(~1.1MB,至 0x10AC30)包含 NVS 区域(文件中为
-擦除态 0xFF),Wi-Fi 配置与应用内部存储数据会被清空。子固件槽位从 0x180000 起,
-在覆盖范围之外不会受损——但升级应走上面的安装页,或四区域命令行形式。8MB 完整
-镜像仅作为构建/校验中间产物保留在 `build/`,从不分发;`tools/verify_firmware.py`
-强制其用户数据区不含任何内容。
-
-### 完整验证门禁
-
-```bash
-./tools/validate.sh --static        # 仓库检查 + host tests
-./tools/validate.sh --firmware      # 固件构建 + 受保护布局校验（在 /tmp 隔离构建,
-                                    # 产物拷回 build/meta-pass_v<版本>.bin）
-node tools/install-slot/test-extract.mjs   # 安装页解包/名字 blob 测试
-```
-
-固件侧改动以 host tests 为先（TDD）；镜像解析/槽位元数据/校验和都是纯逻辑模块，
-不依赖 ESP-IDF。
-
-## 验证记录
-
-| 类别 | 结果（2026-10-06） |
-| --- | --- |
-| 构建 | `validate.sh` 全门禁 PASS；应用 1,024,880 / 1,507,328 B（32% 余量）；合并镜像 8 MB；`cardid` 不动 |
-| Host tests | `meta_image`/`meta_slots`/`meta_name`/`meta_store_json`/`meta_install_model` 套件全过；安装页 node 测试全过；通道 ESP-IDF 模块（`meta_store_net`/`meta_store_install`）经 IDF 5.x 签名桩头做 host 语法检查（`-fsyntax-only`，零硬件）——*WAN 商店下载套件（`meta_store_api` 等）随下载通道在 `feat/mota` 一并退役* |
-| 模拟器（passport-sim） | 三槽列表（含动态 blob 偏移的真名：ota_0→0x355000，ota_1→0x55f000）；导航；详情元数据（`name: Pocket Walkie`，ver 1，1262 KB，sha 前缀）；空槽 BOOT 无操作；未签名警告页；LONG2 启动 ota_0；硬重启回滚到启动器；ota_1 Passport Radar 启动 + 回滚；DELETE→LONG2 擦除（SLOT 1→empty，重启后持久）；IMPORT 页（凭证/配对码/倒计时）；两项观察到判定为非固件 bug：确认页残留行 = 模拟器画布脏区伪影；导入页长按退出需更长按住 = 模拟器时序模型 — *记录于 2026-09-13，早于 LONG2 移除与 BOOT/CANCEL 启动菜单；这两项交互需重测* |
-| GitHub Actions | 静态检查（Linux/GCC）✅、固件门禁（ESP-IDF Docker）✅ |
-| CI artifact SHA-256 | `b86ca4fe…1b28e773`（分发包权威参考；本地编译因嵌入时间戳哈希不同） |
-
-## 与官方固件的关系
-
-本仓库基于 [FoloToy/ai-passport](https://github.com/FoloToy/ai-passport)（`f75873f`,
-MIT）开发：`factory`/`cardid` 布局、`verify_firmware.py` 等基线契约逐字节保持兼容,
-官方 demo 页被移除以容纳启动器 UI。非官方项目，与 FoloToy 无隶属关系。
-
-## 常见问题
-
-| 现象 | 处理 |
-| --- | --- |
-| 串口选择框是空的 | 设备没进下载模式（按住 UP 再开机），或 USB 线只能充电 |
-| 子固件里按键没反应 / 无法 OK 长按返回 | 未适配固件没有返回钩子；断电重启即回启动器（回滚机制），这是设计行为 |
-| 子固件重启后回到了启动器 | 按设计（单次会话模型）：每次上电都回启动器列表页；崩溃自恢复走同一回滚机制 |
-| 槽位显示 "AI-Passport" 而不是玩法名 | 该固件经合成镜像/旧通道装入，没有显示名 blob；用 USB 安装页重装并填 Display name |
-| 镜像被拒绝 | 超过槽位上限（分区大小 − 4KB，尾部 4KB 保留给名字 blob），或不是 ESP32-C3 镜像 |
+构建、主机测试和真机验收分别报告。按键注入仅用于测试构建，正式构建关闭。
+包身份由 `zion-product.json` 定义：MNAM 保存完整中文名称，ESP 描述字段使用
+满足 31 字节限制的紧凑名称。历史网页部署流程为手动触发，提交源码不会自动部署服务。

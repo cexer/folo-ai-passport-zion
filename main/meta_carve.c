@@ -485,7 +485,7 @@ static void pt_add_fixed(meta_pt_t *t, bool with_pools)
 {
     pt_set_entry(t, 1, 2, 0x9000u, 0x6000u, "nvs");
     pt_set_entry(t, 1, 1, 0xF000u, 0x1000u, "phy_init");
-    pt_set_entry(t, 0, 0, 0x10000u, 0x170000u, "factory");
+    pt_set_entry(t, 0, 0, 0x10000u, META_FACTORY_SIZE, "factory");
     if (with_pools) {
         pt_set_entry(t, 1, 0x40, META_POOL0_START,
                      META_POOL0_END - META_POOL0_START, "pool_0");

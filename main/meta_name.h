@@ -21,6 +21,31 @@
 #include <stdint.h>
 #include "meta_sign.h"
 
+/* Strict UTF-8, excluding ASCII/C1 controls, overlong encodings and surrogates.
+ * Kept header-only so installer host fixtures use exactly the same predicate. */
+static inline bool meta_name_utf8_ok(const char *text, size_t len)
+{
+    const uint8_t *p = (const uint8_t *)text;
+    for (size_t i = 0; i < len;) {
+        uint32_t cp = p[i++];
+        unsigned more = 0;
+        uint32_t min = 0;
+        if (cp < 0x80) { if (cp < 0x20 || cp == 0x7f) return false; continue; }
+        if (cp >= 0xc2 && cp <= 0xdf) { more = 1; min = 0x80; cp &= 0x1f; }
+        else if (cp >= 0xe0 && cp <= 0xef) { more = 2; min = 0x800; cp &= 0xf; }
+        else if (cp >= 0xf0 && cp <= 0xf4) { more = 3; min = 0x10000; cp &= 7; }
+        else return false;
+        if (i + more > len) return false;
+        while (more--) {
+            if ((p[i] & 0xc0) != 0x80) return false;
+            cp = (cp << 6) | (p[i++] & 0x3f);
+        }
+        if (cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) ||
+            (cp >= 0x80 && cp < 0xa0)) return false;
+    }
+    return true;
+}
+
 #define META_NAME_MAX          32u          // name 最大 ASCII 字节数(不含 NUL)
 #define META_NAME_BLOB_HEADER  6u           // magic(4) + len(1) + xor(1) 最小开销
 #define META_NAME_BLOB_MAX     38u          // magic(4) + len(1) + name(32) + xor(1)

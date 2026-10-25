@@ -5,7 +5,7 @@
 //   扇区0  carve 记录 A
 //   扇区1  carve 记录 B
 //   扇区2  安全表副本(0xC00,余 0xFF)
-//   扇区3  scratch(保留,全 0xFF)
+//   扇区3  Zion preferences append-only journal (CRC-protected 64-byte records)
 //   扇区4..5  Wi-Fi 凭据备份(L6 迁移后的新家;原 0x35A000 裸区在迁移时先抄过来)
 //
 // 记录 v2(4KB 扇区,erase-before-write,未用字节保持 0xFF;M1/M5 数据 carve

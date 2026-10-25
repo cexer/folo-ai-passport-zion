@@ -14,7 +14,7 @@
 // revisionId 变化时缓存失效回源重取(方案 §1.2 缓存策略)。
 
 import { isFullImage, extractAppImage, parseDataPartitions, parseFirmwareManifest } from "./extract-app-image.js";
-import { unpackNameBlobTail } from "./name-blob.js";
+import { unpackNameBlobTail, sanitizeDisplayName } from "./name-blob.js";
 import { applyDataSizeProfile, firmwareDataRequiredSize } from "./data-size-profile.js";
 
 // 目标分区布局(main/partitions.csv, 8MB flash):
@@ -201,7 +201,7 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
     // 显示名优先取固件自带 MNAM(可打印 ASCII),否则退回商店 slug(服务端保证 ASCII)。
     let name = null;
     if (ext.tailSector) name = unpackNameBlobTail(ext.tailSector);
-    if (!name) name = play.slug;
+    if (!name) name = sanitizeDisplayName(play.title?.zh || play.title?.en || play.slug);
 
     // dynslot §4.1:analyze 阶段没有设备 carve 状态,不能提案。只回答
     // "镜像能不能放进池?"——真正落点由 /api/install/slots 的设备 carve

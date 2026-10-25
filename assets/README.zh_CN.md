@@ -32,3 +32,16 @@
 - 与当前 BSP 音频路径匹配时优先采用 16 kHz、16 位单声道 PCM。
 - 嵌入音频前评估 Flash 与内部 RAM 成本；长录音应流式或分块。
 - 无再分发许可不提交媒体文件。
+
+## Zion 字体
+
+`fonts/zion_font_14.c` 为 14px、1-bit、6873 字符字体，由 Google Fonts Noto Sans SC
+生成，许可为 SIL OFL 1.1。来源、哈希、许可和字符清单见 fonts 目录，重建脚本为
+`../tools/generate-zion-font.py`。覆盖 GB2312 汉字、ASCII 和部分标点，无字距表及压缩；
+启动器不链接音频资源。安装页使用 `images/folo_mini_code_208.c`，将官网公开的
+微信小程序码编码为 208×208 的 I1 图案，加 8 字节调色板共 5,416 字节。
+原始 WebP、单色预览、原始数据和哈希清单保留在 `images/` 下；使用
+`tools/generate-zion-mini-code.py` 转换，可选 Python 依赖见
+`tests/realdevice/requirements-zion-pixels.txt`。这种服务端签发的小程序码不能用
+包含网页网址的普通二维码代替。来源为 FoloToy 官网；来源未单独声明资源再分发许可，
+其权利不等同于仓库代码许可。图案不包含设备专属秘密。

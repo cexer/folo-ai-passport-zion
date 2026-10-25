@@ -10,7 +10,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createStoreAnalyzer } from "../../install-slot/store-analyze.js";
@@ -49,9 +49,9 @@ function rateLimited(ip) {
 // git 不可用或不在仓库内时降级 dev-unknown(不阻断服务)。
 function pageVersion() {
   try {
-    const sha = execSync(
-      "git describe --tags --always --dirty 2>/dev/null",
-      { cwd: PAGE_DIR, encoding: "utf8", timeout: 3000 },
+    const sha = execFileSync(
+      "git", ["describe", "--tags", "--always", "--dirty"],
+      { cwd: PAGE_DIR, encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] },
     ).trim();
     return sha ? `dev-${sha}` : "dev-unknown";
   } catch {

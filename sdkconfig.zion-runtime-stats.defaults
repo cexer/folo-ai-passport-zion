@@ -1,0 +1,3 @@
+# Diagnostic task execution-time counters; never required by production.
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y

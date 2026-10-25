@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -122,7 +122,7 @@
   </figure>
 </div>
 <main>
-  <h1 data-i18n="title_page">meta-pass · USB Slot Installer</h1>
+  <h1 data-i18n="title_page">Zion · USB 玩法安装器</h1>
   <p class="subtitle" data-i18n="subtitle">Write a child firmware into slot 0 / 1 / 2 over USB serial (Chrome + Web Serial).</p>
 
   <p id="mock-banner" hidden></p>
@@ -396,6 +396,13 @@ async function loadSlotModel() {
     log(t("msg_slot_table_read_failed", { err: err.message }), "warn");
   }
 
+  // The research 2 MiB factory profile has a different pool start. This legacy
+  // USB allocator must fail closed until it supports that geometry explicitly.
+  const researchFactory = parts?.find((p) => p.label === "factory" && p.size === 0x200000);
+  if (researchFactory) {
+    slotModel.loaded = false;
+    throw new Error("此研究布局请使用官方小程序安装；当前 USB 分配器不支持 2 MiB 启动器布局。");
+  }
   if (!recordError && !pick?.rec && parts && isDynslotLayout(parts)) {
     // 2026-10-16 真机:记录两扇区均不可解码(表只剩 FIXED)→ DYN_FRESH 静默
     // 兜底,快照流程会拿不完整的分配视图硬跑。必须醒目日志,否则排障无据。
@@ -850,7 +857,7 @@ const LANG_KEY = "metapass-install-lang";
 const I18N = {
   en: {
     // 静态文案
-    title_page: "meta-pass · USB Slot Installer",
+    title_page: "Zion · USB App Installer",
     coffee_caption: "Buy the author a coffee",
     subtitle: "Write a child firmware into slot 0 / 1 / 2 over USB serial (Chrome + Web Serial).",
     hint: "Hold <b>UP</b> while powering on to enter download mode, then plug in the USB cable.",
@@ -1069,7 +1076,7 @@ const I18N = {
   },
   zh: {
     // 静态文案
-    title_page: "meta-pass · USB 槽位烧录器",
+    title_page: "Zion · USB 玩法安装器",
     coffee_caption: "请作者喝咖啡",
     subtitle: "通过 USB 串口(Chrome + Web Serial)将子固件写入 slot 0 / 1 / 2。",
     hint: "上电时按住 <b>UP</b> 键进入 ROM download mode,然后插入 USB 线。",
@@ -1293,7 +1300,7 @@ let currentLang = (() => {
   try { stored = localStorage.getItem(LANG_KEY); } catch { /* ignore */ }
   if (stored === "en" || stored === "zh") return stored;
   const nav = typeof navigator !== "undefined" ? (navigator.language || "") : "";
-  return nav.toLowerCase().startsWith("zh") ? "zh" : "en";
+  return "zh";
 })();
 
 function t(key, args = {}) {

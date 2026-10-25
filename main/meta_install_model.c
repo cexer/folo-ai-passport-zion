@@ -1,6 +1,7 @@
 // main/meta_install_model.c —— 实现见头文件注释。
 // 全部为有界纯逻辑:不分配堆、不碰 flash、不依赖 ESP-IDF;host 与真机同一份。
 #include "meta_install_model.h"
+#include "meta_name.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -47,7 +48,7 @@ bool meta_install_model_parse(const char *json, size_t len,
     if (!meta_store_json_get_string(json, len, "name", out->name, sizeof(out->name))) {
         return false;
     }
-    if (out->name[0] == '\0' || !printable_ascii(out->name)) return false;
+    if (out->name[0] == '\0' || !meta_name_utf8_ok(out->name, strlen(out->name))) return false;
 
     // storeSha256:恰好 64 位小写 hex(手机侧已对合并镜像校验;设备只作绑定锚)。
     char hex[META_SHA256_HEX_LEN + 1];

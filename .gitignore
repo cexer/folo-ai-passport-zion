@@ -26,3 +26,17 @@ node_modules/
 # macOS Finder metadata
 .DS_Store
 build-e2e/
+/build-baseline/
+
+/dist/
+
+# Local research, device material and ad-hoc reports.
+/diagnostics/
+/resources/
+/built-tools/
+/PassportSim/
+/docs/zion-592-research.md
+/docs/zion-592-research.zh_CN.md
+.env
+.env.*
+*.log

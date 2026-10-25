@@ -14,14 +14,14 @@
 //                tests/fixtures/carve_record_v1_golden.bin
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const rec = await import(path.join(ROOT, "install-slot", "dynslot-record.js"));
-const mock = await import(path.join(ROOT, "install-slot", "mock-device.js"));
-const lu = await import(path.join(ROOT, "install-slot", "launcher-upgrade.js"));
-const pool = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
+const rec = await import(pathToFileURL(path.join(ROOT, "install-slot", "dynslot-record.js")).href);
+const mock = await import(pathToFileURL(path.join(ROOT, "install-slot", "mock-device.js")).href);
+const lu = await import(pathToFileURL(path.join(ROOT, "install-slot", "launcher-upgrade.js")).href);
+const pool = await import(pathToFileURL(path.join(ROOT, "install-slot", "dynslot-pool.js")).href);
 
 const fixture = (name) => new Uint8Array(readFileSync(path.join(ROOT, "tests", "fixtures", name)));
 

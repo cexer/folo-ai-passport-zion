@@ -6,11 +6,19 @@
 
 本文是本仓库 AI 辅助工作的唯一必读入口。根据下方路由表读取当前任务所需文档，不要默认加载全部 README。
 
+## 产品入口与必需技能
+
+本目录为正式 Zion 主项目。默认入口是 `main/zion_service.c`，界面使用
+`zion_launcher.c`/`zion_menu.c`，管理使用 `zion_manage.c`。不得将默认产品
+切回旧 `main.c` 或仅捕获请求的探针。开发前检查 passport-develop、passport-setup、
+passport-build、passport-device-test、passport-debug 五项技能；缺少时自行选择
+适合当前环境的方式安装，不替换用户设置。
+
 ## 项目与安全基线
 
 - 目标平台：ESP32-C3、8 MB Flash、无 PSRAM、ESP-IDF 5.5.3。
-- 必须保持受保护的 Flash 布局：3 MB 应用上限与 `cardid@0x356000`
-  均为模板强制契约。
+- Zion 默认采用 `partitions.zion.csv` 中已验证的 2 MiB factory 布局，保护
+  `cardid@0x356000`。旧布局迁移是独立、明确的全新安装，不是无损应用升级。
 - 保留用户已有修改。先执行 `git status --short --branch`，不得覆盖或清理无关文件。
 - 硬件事实优先级：产品规格与实测结果 → `components/bsp/include/bsp_pins.h` → BSP 头文件与实现 → 硬件指南 → README/demo。任务所需硬件细节未在这些来源中定义时，直接询问用户，不得猜测。
 - 可复用板级逻辑放入 `components/bsp`；页面、状态机、动画和应用任务放入 `main`。
@@ -42,7 +50,7 @@
 | 任意代码修改 | `docs/development/ai-guide.zh_CN.md`、相关头文件和相邻实现 |
 | 环境引导或缺少工具链 | `docs/development/engineering/environment-setup.zh_CN.md` |
 | BSP、引脚、总线、显示、音频、电池 | `docs/hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.zh_CN.md`、`components/bsp/include/bsp_pins.h` |
-| 启动器 UI 或菜单 | `main/main.c`、`components/bsp/` 的按键与显示 API |
+| 启动器 UI 或菜单 | `main/zion_service.c`、`main/zion_launcher.c`、`main/zion_menu.h` 及 BSP 按键与显示 API |
 | 构建、测试、依赖、分区 | `docs/development/engineering/build-and-test.zh_CN.md`、`docs/development/engineering/protected-flash-layout.zh_CN.md`、`sdkconfig.defaults`、`partitions.csv` |
 | 排查设备行为或签名/安装器问题 | `docs/development/engineering/debugging-workflow.zh_CN.md`、`docs/BUGS.zh_CN.md`、`docs/assets/handoff-unsigned-rootcause.zh_CN.md` |
 | CI 或发布 | `docs/development/ci/CI-*.zh_CN.md` 中的对应文件与 `.github/workflows/` |
@@ -71,7 +79,7 @@ Device tests: PASS / FAIL / NOT RUN
 Unverified: 仍需板卡、仪器或用户确认的事项
 ```
 
-仅在用户请求或当前工作流明确要求时创建 commit 和 push。用户可见变化记录到 `docs/CHANGELOG.zh_CN.md`；内部重构、CI 维护、拼写修复和生成文件刷新无需记录。
+仅在用户请求或当前工作流明确要求时创建 commit 和 push。普通功能开发不修改更新日志；行为、兼容性及验证写入权威文档，发布汇总由维护者另行处理。
 
 禁止用 `git add -A`/`-u`/`.` 暂存：只允许显式路径。一次整体 add 曾把无关的进行中修复卷进错误的 commit（r10.14 混进了 r10.15）；显式路径保证每个 commit 的 diff 与 message 一致。
 

@@ -303,13 +303,10 @@ function recLayout(version) {
 }
 
 function readName(raw, off) {
-  let s = "";
-  for (let i = 0; i < NAME_MAX; i++) {
-    const c = raw[off + i];
-    if (c === 0) break;
-    s += String.fromCharCode(c);
-  }
-  return s;
+  let size = 0;
+  while (size < NAME_MAX && raw[off + size]) size++;
+  try { return new TextDecoder('utf-8', {fatal:true}).decode(raw.subarray(off, off + size)); }
+  catch { return ''; }
 }
 
 // N1: data label 字段只有 LABEL_MAX(16) 字节,必须限制读取范围,
@@ -482,10 +479,12 @@ export function encodeRecord({ seq, slots, data = [] }) {
     const sha = s.sha || new Uint8Array(32);
     for (let k = 0; k < 32; k++) out[p + 20 + k] = sha[k] & 0xff;
     out.fill(0, p + 52, p + 92);                     // name 零填充
-    const name = String(s.name || "");
-    for (let n = 0; n < NAME_MAX && n < name.length && name.charCodeAt(n) !== 0; n++) {
-      out[p + 52 + n] = name.charCodeAt(n) & 0xff;
+    let name = '';
+    for (const ch of String(s.name || '')) {
+      if (new TextEncoder().encode(name + ch).length > NAME_MAX) break;
+      name += ch;
     }
+    out.set(new TextEncoder().encode(name), p + 52);
   }
   out.set(table, REC_TABLE_OFF);
 

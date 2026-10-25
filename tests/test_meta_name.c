@@ -32,6 +32,10 @@ static const uint8_t BLOB_32[] = {
 
 int main(void)
 {
+    assert(meta_name_utf8_ok("随身小智", strlen("随身小智")));
+    assert(!meta_name_utf8_ok("\xc0\xaf", 2));
+    assert(!meta_name_utf8_ok("\xed\xa0\x80", 3));
+    assert(!meta_name_utf8_ok("\xe4\xb8", 2));
     uint8_t buf[64];
     char out[META_NAME_MAX + 1];
 
@@ -63,7 +67,7 @@ int main(void)
                           buf, sizeof(buf)) == 0);                  // 33 字节超长
     assert(meta_name_pack("has\ttab", buf, sizeof(buf)) == 0);      // 控制字符 0x09
     assert(meta_name_pack("has\x7f""del", buf, sizeof(buf)) == 0);  // DEL 0x7F
-    assert(meta_name_pack("h\xc3\xa9", buf, sizeof(buf)) == 0);     // 非 ASCII(UTF-8 é)
+    assert(meta_name_pack("h\xc3\xa9", buf, sizeof(buf)) > 0);     // 非 ASCII(UTF-8 é)
     // 输出缓冲不足:恰好差 1 字节
     assert(meta_name_pack("Radar", buf, META_NAME_BLOB_HEADER + 5 - 1) == 0);
     // 恰好够长必须成功
@@ -126,5 +130,9 @@ int main(void)
     assert(!meta_name_unpack_tail(window, sizeof(window), out, sizeof(out)));
     assert(!meta_name_unpack_tail(window, sizeof(window) - 1, out, sizeof(out)));
 
+    memset(window,0xff,sizeof(window));
+    assert(meta_name_pack_tail("ZION 多玩法小程序管理器",window,sizeof(window))==38);
+    assert(meta_name_unpack_tail(window,sizeof(window),out,sizeof(out)));
+    assert(strcmp(out,"ZION 多玩法小程序管理器")==0);
     return 0;
 }

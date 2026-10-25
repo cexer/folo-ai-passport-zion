@@ -6,11 +6,11 @@
 //
 // 运行:node tests/test_dynslot_pool.mjs(仓库根)。
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const pool = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
+const pool = await import(pathToFileURL(path.join(ROOT, "install-slot", "dynslot-pool.js")).href);
 const { POOL, POOL_TOTAL, META_SLOT_COUNT, carveNeed, appLimit,
         carvePlace, geomFromListing, dataSizeBounds, normalizeDataSize,
         DATA_SIZE_GRANULE, DATA_SIZE_STEP, dataPartitionMinimum } = pool;

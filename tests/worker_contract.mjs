@@ -10,7 +10,7 @@
 // 注:端到端语义验配(真 fetch 一个 id)属 wrangler pages dev / 部署后冒烟,
 // 本文件只做不依赖 workerd 运行时的静态契约检查。
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import assert from "node:assert/strict";
 
@@ -309,7 +309,7 @@ console.log("PASS 16: capture ingest endpoint contract (dispatch/magic/version/d
 //    已注册+合法 trailer → 200 verified;已注册+坏 sig → 403;已注册+payload
 //    sha 不符 → 403;未注册 v7 → 200 verified:false;v6 无 trailer → 现状路径。
 {
-  const worker = await import(path.join(ROOT, "install-slot", "_worker.js"));
+  const worker = await import(pathToFileURL(path.join(ROOT, "install-slot", "_worker.js")).href);
   const handle = worker.default.fetch;
   const hex = (u8) => [...u8].map((b) => b.toString(16).padStart(2, "0")).join("");
   // 身份派生同固件契约:device_hash = SHA-256("mpr-id-v1"||wifi_mac||ble_mac)[:16]。

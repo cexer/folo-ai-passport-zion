@@ -6,11 +6,21 @@
 
 This file is the only mandatory entry point for AI-assisted work in this repository. Read task-specific documents from the routing table below; do not load every README by default.
 
+## Product entry and required skills
+
+This checkout is the primary Zion product. Default entry is `main/zion_service.c`,
+with `zion_launcher.c`/`zion_menu.c` for UI and `zion_manage.c` for management.
+Do not switch the product back to the legacy `main.c` or the capture-only probe.
+Check availability of passport-develop, passport-setup, passport-build,
+passport-device-test and passport-debug before development; install missing
+skills using the environment-appropriate method without replacing user settings.
+
 ## Project and safety baseline
 
 - Target: ESP32-C3, 8 MB Flash, no PSRAM, ESP-IDF 5.5.3.
-- Preserve the protected Flash layout: the 3 MB application limit and `cardid`
-  at `0x356000` are mandatory template contracts.
+- Zion defaults to the validated 2 MiB factory layout in `partitions.zion.csv`;
+  preserve identity at `0x356000`. Treat legacy-layout migration as a separate
+  explicitly fresh installation, never as a lossless application update.
 - Preserve existing user changes. Start with `git status --short --branch`; never overwrite or clean unrelated files.
 - Hardware facts follow this priority: product specifications and measured results → `components/bsp/include/bsp_pins.h` → BSP headers and implementation → hardware guide → README/demo code. If a task requires a hardware detail not defined by these sources, ask the user instead of guessing.
 - Reusable board logic belongs in `components/bsp`; pages, state machines, animations, and application tasks belong in `main`.
@@ -42,7 +52,7 @@ This file is the only mandatory entry point for AI-assisted work in this reposit
 | Any code change | `docs/development/ai-guide.md`, relevant headers and neighboring implementation |
 | Environment bootstrap or missing toolchain | `docs/development/engineering/environment-setup.md` |
 | BSP, pins, buses, display, audio, battery | `docs/hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.md`, `components/bsp/include/bsp_pins.h` |
-| Launcher UI or menu | `main/main.c`, `components/bsp/` button and display APIs |
+| Launcher UI or menu | `main/zion_service.c`, `main/zion_launcher.c`, `main/zion_menu.h`, BSP button/display APIs |
 | Build, test, dependencies, partitions | `docs/development/engineering/build-and-test.md`, `docs/development/engineering/protected-flash-layout.md`, `sdkconfig.defaults`, `partitions.csv` |
 | Debugging device-behavior or signature/installer issues | `docs/development/engineering/debugging-workflow.md`, `docs/BUGS.md`, `docs/assets/handoff-unsigned-rootcause.md` |
 | CI or release | the matching file in `docs/development/ci/CI-*.md` and `.github/workflows/` |
@@ -71,7 +81,7 @@ Device tests: PASS / FAIL / NOT RUN
 Unverified: remaining board, instrument, or user checks
 ```
 
-Create commits and push only when the user requests them or the active workflow explicitly requires them. Record user-visible changes in `docs/CHANGELOG.md`; internal refactors, CI maintenance, typo fixes, and generated-file refreshes do not require a changelog entry.
+Create commits and push only when the user requests them or the active workflow explicitly requires them. Do not edit changelogs for ordinary feature work; record behavior, compatibility and validation in authoritative documentation. Release aggregation is a separate maintainer action.
 
 Never stage with `git add -A`/`-u`/`.`: stage explicit paths only. A blanket add once
 swept an unrelated in-flight fix into the wrong commit (r10.14 landed inside r10.15);

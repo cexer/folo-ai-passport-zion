@@ -2,17 +2,19 @@
 
 #include "lvgl.h"
 
-#define UI_SKY        0x1689E8
-#define UI_SKY_DARK   0x0872C9
-#define UI_INK        0x17202A
-#define UI_INK2       0x45566B   // 次级墨色(与手机端 --ink2 同值):非物品行/弱信息
-#define UI_PAPER      0xF4F4EA
-#define UI_GRASS      0x82BE2D
-#define UI_GRASS_DARK 0x55951D
-#define UI_YELLOW     0xFFD928
+#define UI_SKY        0x101912
+#define UI_SKY_DARK   0x81966B
+#define UI_INK        0xD6E2B6
+#define UI_INK2       0x81966B
+#define UI_PAPER      0x18251B
+#define UI_GRASS      0x101912
+#define UI_GRASS_DARK 0x243326
+#define UI_YELLOW     0xBBD980
 #define UI_ORANGE     0xFFB23E
 #define UI_RED        0xE43B2F
 #define UI_MUTED      0xD9E7EC
+LV_FONT_DECLARE(zion_font_14);
+#define ZION_FONT (&zion_font_14)
 
 lv_obj_t *ui_pixel_screen_create(const char *title);
 lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,

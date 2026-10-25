@@ -90,13 +90,21 @@ export function isFullImage(buf) {
 // 分区表条目 32B/条:type@+2、subtype@+3、offset U32LE@+4、size U32LE@+8;
 // type=0 且 subtype=0 即 factory 应用。
 function findFactoryPartition(buf) {
+  const ota = [];
   for (let off = PARTITION_TABLE_OFFSET; off + PARTITION_ENTRY_LEN <= buf.length; off += PARTITION_ENTRY_LEN) {
     if (buf[off] !== PARTITION_MAGIC_LO || buf[off + 1] !== PARTITION_MAGIC_HI) break;
     if (buf[off + 2] === 0x00 && buf[off + 3] === 0x00) {
       return { offset: u32le(buf, off + 4), size: u32le(buf, off + 8) };
     }
+    if (buf[off + 2] === 0x00 && (buf[off + 3] & 0xf0) === 0x10) {
+      const offset = u32le(buf, off + 4), size = u32le(buf, off + 8);
+      if (offset < buf.length && buf[offset] === ESP_IMAGE_MAGIC) ota.push({offset, size});
+    }
   }
-  return null;
+  // Fresh OTA-only packages have one populated app and an erased spare. Never
+  // guess which revision to run when both slots contain images.
+  if (ota.length > 1) throw new Error('Ambiguous OTA-only image: multiple populated app partitions.');
+  return ota[0] || null;
 }
 
 // 统一入口:Full 镜像自动解包出应用镜像;应用单镜像直接校验。
@@ -110,7 +118,9 @@ export function extractAppImage(buf, maxSize) {
       throw new Error("Full flash image detected, but no factory app partition (type=0, subtype=0) found in the partition table.");
     }
     appStart = part.offset;
-    source = `full image (factory app at ${hex(part.offset)})`;
+    source = `full image (application at ${hex(part.offset)})`;
+    const imageLength = espImageLength(buf, appStart);
+    if (imageLength > part.size) throw new Error('App image exceeds max app image size of its declared partition.');
   }
   const imgLen = espImageLength(buf, appStart);
   // 上限按槽位分区大小动态计算:app 之后至少还要能放下一个 4KB metadata sector。
@@ -142,6 +152,7 @@ export function parseFirmwareManifest(buf) {
 
   const partitions = [];
   const unsupported = [];
+  const selectedApp = findFactoryPartition(buf);
   for (let off = PARTITION_TABLE_OFFSET; off + PARTITION_ENTRY_LEN <= buf.length; off += PARTITION_ENTRY_LEN) {
     if (buf[off] !== PARTITION_MAGIC_LO || buf[off + 1] !== PARTITION_MAGIC_HI) break;
     const type = buf[off + 2];
@@ -152,7 +163,8 @@ export function parseFirmwareManifest(buf) {
     for (let i = 12; i < 28 && buf[off + i] !== 0; i++) label += String.fromCharCode(buf[off + i]);
 
     if (type === 0x00) {
-      if (subtype === 0x00) partitions.push({ kind: "app", label, type: "app", subtype, offset, size });
+      if (selectedApp && offset === selectedApp.offset)
+        partitions.push({ kind: "app", label, type: "app", subtype, offset, size });
       continue;
     }
     if (type !== 0x01) continue;
@@ -217,12 +229,12 @@ export function parseFirmwareManifest(buf) {
   // other system-owned entries were excluded above, while unknown types are in
   // unsupported and cause fail-closed admission below.
   const data = partitions.filter(p => p.kind === "data");
-  if (!apps.some(p => p.subtype === 0x00)) {
+  if (!apps.length) {
     throw new Error("no factory app partition");
   }
   if (unsupported.length) {
     return {
-      app: apps.find(p => p.subtype === 0x00),
+      app: apps[0],
       data,
       unsupported,
       required_size: null,
@@ -232,7 +244,7 @@ export function parseFirmwareManifest(buf) {
   }
 
   const align = (n) => Math.ceil(n / 0x1000) * 0x1000;
-  const app = apps.find(p => p.subtype === 0x00);
+  const app = apps[0];
   const appImageSize = espImageLength(buf, app.offset);
   const required_size = align(appImageSize) +
     data.reduce((sum, p) => sum + align(p.required_size), 0);

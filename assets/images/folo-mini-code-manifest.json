@@ -1,0 +1,16 @@
+{
+  "source_url": "https://ai-passport.folotoy.cn/assets/guides/wireless-install/mini-program-code.webp",
+  "source_sha256": "dd0a178ce856c86c20286f86a4a158c7e200b20f25b87c6346cf3d117abafb94",
+  "kind": "WeChat Mini Program code issued by official FoloToy website; not a standard URL QR",
+  "width": 208,
+  "height": 208,
+  "stride": 26,
+  "format": "I1",
+  "palette": "0=opaque white; 1=opaque black",
+  "conversion": "Pillow L grayscale; LANCZOS 208x208; threshold 128; no dithering; invert packed bits",
+  "data_bytes": 5416,
+  "data_sha256": "a4857fe4b615b829f8feb169d49c3e0efecbf812ad8c3d7a4f3c58226922250a",
+  "c_sha256": "8299fdfc7193ba6fa1372c0b4ee0f663685741f7ad792e0f2a422d75e90aac27",
+  "c_sha256_newlines": "LF",
+  "rights": "Official FoloToy published asset; source does not state a separate redistribution license"
+}

@@ -97,12 +97,10 @@ info "生成单文件固件产物(build/meta-pass_<版本>.bin)"
 python3 - <<'PYEOF'
 import hashlib
 import struct
-import subprocess
+import json
 from pathlib import Path
 
-version = subprocess.run(
-    ["git", "-C", ".", "describe", "--tags", "--match", "v[0-9]*"],
-    capture_output=True, text=True).stdout.strip() or "v0.0.0-dev"
+version = "v" + json.loads(Path("build/project_description.json").read_text())["project_version"]
 
 # 本体 = 合并镜像头部(0x0 .. app 末尾):bootloader+分区表+phy+app 按 flash 偏移
 # 铺平,与 8MB 全量镜像头部逐字节一致(verify_firmware.py 强校验)。合并镜像在
@@ -130,7 +128,7 @@ info "校验受保护固件布局与升级安全(verify_firmware.py)"
 python3 tools/verify_firmware.py build/ || fail "布局校验未通过"
 
 # ---- 7. 汇总产物与烧写指引 -----------------------------------------------
-VERSION="$(git -c safe.directory='*' -C "$REPO_ROOT" describe --tags --match 'v[0-9]*' 2>/dev/null || echo v0.0.0-dev)"
+VERSION="v$(python3 -c 'import json; print(json.load(open("build/project_description.json"))["project_version"])')"
 
 info "构建完成 ✓"
 cat <<EOF

@@ -1,6 +1,29 @@
+if(CONFIG_ZION_592_PROBE OR CONFIG_ZION_LAUNCHER)
+    idf_component_register(SRCS "zion_service.c" "zion592_wire.c" "zion_ui.c" "zion_install_view.c"
+        "ui_pixel_math.c" "../assets/fonts/zion_font_14.c"
+        INCLUDE_DIRS "."
+        REQUIRES bsp bt esp_event esp_netif esp_wifi esp_coex nvs_flash esp_timer
+                 esp_http_client esp_http_server app_update esp_partition spi_flash mbedtls)
+    if(CONFIG_ZION_LAUNCHER)
+        target_sources(${COMPONENT_LIB} PRIVATE "zion_launcher.c" "zion_menu.c" "zion_manage.c" "zion_prefs.c" "zion_policy.c" "zion_wifi.c" "zion_form.c" "../assets/images/folo_mini_code_208.c")
+    endif()
+    if(CONFIG_ZION_592_INSTALL)
+        target_sources(${COMPONENT_LIB} PRIVATE "zion592_install.c" "zion592_image.c"
+            "zion_title.c" "meta_store_json.c"
+            "meta_carve.c" "meta_carve_store.c" "meta_carve_boot.c" "meta_carve_flash.c"
+            "meta_md5.c" "meta_name.c")
+    endif()
+    target_compile_options(${COMPONENT_LIB} PRIVATE -Werror)
+    return()
+endif()
+
 idf_component_register(
     SRCS "main.c"
-         "ui_pixel.c"
+         "zion_policy.c"
+         "zion_prefs.c"
+         "zion_ui.c"
+         "zion_text.c"
+         "../assets/fonts/zion_font_14.c"
          "ui_pixel_math.c"
          "meta_image.c"
          "meta_name.c"
@@ -26,12 +49,14 @@ idf_component_register(
          # 链接同一份,见 bootloader_components/meta_boot_hooks/CMakeLists.txt)
          "meta_md5.c"
     INCLUDE_DIRS "."
-    # 相比基线:去掉 bt(启动器不用 BLE),保留 esp_http_server(配网页 +
+    # Research declares bt during early dependency expansion so the optional
+    # probe receives NimBLE headers. The normal launcher still disables BLE.
+    # 保留 esp_http_server(配网页 +
     # 本地安装服务)、app_update/esp_partition(槽位与回滚)、mbedtls(install.c
     # 引 mbedtls/sha256.h,配网页也用其 RNG);WAN 下载通道已删,不再需要
     # esp_http_client / esp-tls / esp_crt_bundle(证书包随通道一并移除)。
-    REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash
-             esp_http_server app_update esp_partition esp_app_format mbedtls
+    REQUIRES bsp bt esp_coex esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash
+             esp_http_server esp_http_client app_update esp_partition esp_app_format mbedtls
              lwip      # install httpd 的 socket 层(自 v5.1 起需显式声明)
              spi_flash # 裸 flash 凭证备份(esp_flash_read/write/erase)
 )

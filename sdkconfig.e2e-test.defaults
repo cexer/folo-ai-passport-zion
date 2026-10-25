@@ -1,3 +1,12 @@
 # Include after sdkconfig.defaults only for a dedicated hardware E2E launcher build.
 # Never use this overlay for a production/release image.
 CONFIG_META_E2E_TEST_CONTROL=y
+
+# Legacy USB contract build; product UI injection has its own overlay.
+CONFIG_ZION_LAUNCHER=n
+CONFIG_ZION_592_PROBE=n
+CONFIG_ZION_592_INSTALL=n
+CONFIG_ZION_FACTORY_SIZE=1507328
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+CONFIG_BT_ENABLED=n

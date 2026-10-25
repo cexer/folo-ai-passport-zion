@@ -4,6 +4,27 @@
 
 menu "meta-pass launcher"
 
+    config ZION_LAUNCHER
+        bool "Build the Zion product launcher with official mini-program installation"
+        default n
+
+    config ZION_FACTORY_SIZE
+        int "Zion factory application bytes (validated product layout)"
+        default 1507328
+        range 1507328 2097152
+
+    config ZION_592_PROBE
+        bool "Build non-installing 592 BLE research probe instead of launcher"
+        default n
+        help
+            Receives and validates the 592 wire protocol but never writes play images.
+            Use sdkconfig.592-probe.defaults for the dedicated research image.
+
+    config ZION_592_INSTALL
+        bool "Enable verified HTTPS download and Zion slot installation"
+        depends on ZION_592_PROBE || ZION_LAUNCHER
+        default n
+
     config META_STORE_SESSION_TIMEOUT_MS
         int "Store session timeout (ms)"
         default 1800000

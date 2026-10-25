@@ -13,6 +13,8 @@ run_static_checks() {
     local test_dir
 
     python3 tools/check_repo.py
+    python3 tests/test_zion_product.py
+    python3 tests/test_zion_flash_layout.py
     python3 tests/test_storage_four_goals_handoff_contract.py
     python3 tests/test_usb_backup_segmented_read.py
     python3 tests/test_storage_snapshot_device_contract.py
@@ -47,6 +49,44 @@ PY
         tests/test_ui_pixel_math.c main/ui_pixel_math.c \
         -o "${test_dir}/test_ui_pixel_math"
     "${test_dir}/test_ui_pixel_math"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_zion_policy.c main/zion_policy.c -o "${test_dir}/test_zion_policy"
+    "${test_dir}/test_zion_policy"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_zion592_wire.c main/zion592_wire.c -o "${test_dir}/test_zion592_wire"
+    "${test_dir}/test_zion592_wire"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_zion592_image.c main/zion592_image.c main/meta_carve.c main/meta_md5.c \
+        -o "${test_dir}/test_zion592_image"
+    "${test_dir}/test_zion592_image"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -DCONFIG_ZION_FACTORY_SIZE=2097152 -Imain \
+        tests/test_zion592_layout.c main/meta_carve.c main/meta_carve_store.c main/meta_md5.c \
+        -o "${test_dir}/test_zion592_layout"
+    "${test_dir}/test_zion592_layout"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -DCONFIG_ZION_592_INSTALL=1 -include tests/esp_stubs/meta_workspace_allocator.h -Itests/esp_stubs -Imain \
+        tests/test_zion592_install.c main/zion592_install.c main/zion592_image.c main/meta_carve_flash.c \
+        tests/esp_stubs/esp_flash_host_fixture.c tests/esp_stubs/meta_store_host_fixture.c \
+        main/meta_carve_store.c main/meta_carve.c main/meta_md5.c main/meta_name.c \
+        main/zion_manage.c main/zion_prefs.c main/zion_policy.c \
+        main/zion_title.c main/meta_store_json.c \
+        -o "${test_dir}/test_zion592_install"
+    "${test_dir}/test_zion592_install"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain tests/test_zion_menu.c main/zion_menu.c -o "${test_dir}/test_zion_menu"
+    "${test_dir}/test_zion_menu"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain tests/test_zion_form.c main/zion_form.c -o "${test_dir}/test_zion_form"
+    "${test_dir}/test_zion_form"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_zion_text.c main/zion_text.c -o "${test_dir}/test_zion_text"
+    "${test_dir}/test_zion_text"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_zion_install_view.c main/zion_install_view.c -o "${test_dir}/test_zion_install_view"
+    "${test_dir}/test_zion_install_view"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_zion_title.c main/zion_title.c main/meta_store_json.c -o "${test_dir}/test_zion_title"
+    "${test_dir}/test_zion_title"
+    python3 tests/test_zion_ui_text.py
+    python3 tests/test_zion_minicode.py
+    bash tools/test-zion-qr-render.sh
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_meta_image.c main/meta_image.c \
         -o "${test_dir}/test_meta_image"
@@ -179,7 +219,7 @@ PY
     # 的文件返回 0(它把脚本执行了),对坏文件返回非 0,两种情况都不可靠。
     for _ck in "${NODE_BIN:-}" /usr/local/bin/node "$(command -v node 2>/dev/null || true)"; do
         [[ -n "$_ck" && -x "$_ck" ]] || continue
-        [[ "$($_ck --version 2>/dev/null)" == v[0-9]* ]] || continue
+        [[ "$("$_ck" --version 2>/dev/null)" == v[0-9]* ]] || continue
         _ck_bin="$_ck"
         break
     done
@@ -293,6 +333,7 @@ PATHCHECK
     fi
     if [[ -n "${node_bin}" ]]; then
         "${node_bin}" tools/install-slot/test-extract.mjs
+        "${node_bin}" tests/test_zion_extract.mjs
         "${node_bin}" tests/test_storage_snapshot.mjs
         "${node_bin}" tests/test_storage_snapshot_restore.mjs
         "${node_bin}" tools/install-slot/test-store-analyze.mjs
@@ -374,7 +415,7 @@ run_firmware_checks() (
     # 单文件混合格式产物(与 tools/build-firmware.sh 同一契约:
     # bootable 本体 + 44B MPUPV2 指纹尾段;verify_firmware.py 强制校验)
     local version
-    version="$(git -c safe.directory='*' -C "${repo_root}" describe --tags --match 'v[0-9]*' 2>/dev/null || echo v0.0.0-dev)"
+    version="v$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["project_version"])' "${validation_build_dir}/project_description.json")"
     python3 - "${validation_build_dir}" "${version}" <<'PYEOF'
 import hashlib
 import struct

@@ -67,7 +67,14 @@ void meta_pt_encode(const meta_pt_t *t, uint8_t out[META_PT_SIZE]);
 #define META_CARVE_MIN_DATA     0x1000u    // 4KB(数据分区无 128KB 下限)
 #define META_DATA_LABEL_MAX     16         // 表条目 label 字段同源(16B 含 NUL)
 
-#define META_POOL0_START 0x180000u    // factory 尾
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#endif
+#ifndef CONFIG_ZION_FACTORY_SIZE
+#define CONFIG_ZION_FACTORY_SIZE 0x170000
+#endif
+#define META_FACTORY_SIZE ((uint32_t)CONFIG_ZION_FACTORY_SIZE)
+#define META_POOL0_START (0x10000u + META_FACTORY_SIZE)
 #define META_POOL0_END   0x356000u    // cardid 起
 #define META_POOL1_START 0x360000u    // store 尾
 #define META_POOL1_END   0x7FE000u    // otadata 起

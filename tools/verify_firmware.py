@@ -88,6 +88,21 @@ def parse_partition_table(raw: bytes) -> tuple[list[Partition], bool]:
     return partitions, found_md5
 
 
+def compatible_zion_layout(live: bytes, target: bytes) -> bool:
+    """Allow carved APP/DATA views, requiring every fixed target partition."""
+    try:
+        actual, live_md5 = parse_partition_table(live)
+        desired, target_md5 = parse_partition_table(target)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    by_label = {part.label: part for part in actual}
+    if not live_md5 or not target_md5 or len(by_label) != len(actual):
+        return False
+    fixed = [part for part in desired if (part.kind == 0 and part.subtype == 0)
+             or (part.kind == 1 and part.subtype <= 2)]
+    return bool(fixed) and all(by_label.get(part.label) == part for part in fixed)
+
+
 def verify_protected_layout(merged: bytes, build_dir: Path) -> None:
     """Enforce the protected partition and merged-artifact layout."""
     table = merged[
@@ -98,6 +113,11 @@ def verify_protected_layout(merged: bytes, build_dir: Path) -> None:
         raise ValueError("partition table has no MD5 marker")
 
     by_label = {item.label: item for item in partitions}
+    factory = by_label.get("factory")
+    if factory is None or factory.size not in (APP_MAX_SIZE, 0x200000):
+        raise ValueError("unsupported factory profile")
+    app_limit = factory.size
+    pool0_start = 0x10000 + app_limit
 
     # 产物只能携带安全表:除 factory 外不得有任何 app 条目 —— carved 表(ota_*)
     # 是设备运行时的 carve 决策,混进产物会让槽位布局被发布流程冻结(§4.2)。
@@ -109,12 +129,12 @@ def verify_protected_layout(merged: bytes, build_dir: Path) -> None:
         )
 
     expected = {
-        "factory": Partition(0, 0, 0x10000, APP_MAX_SIZE, "factory"),
+        "factory": Partition(0, 0, 0x10000, app_limit, "factory"),
         "cardid": Partition(1, 2, CARDID_OFFSET, CARDID_SIZE, "cardid"),
         # dynslot 安全表的其余固定/占位条目(partitions.csv 同源)。
         "store": Partition(1, 2, 0x35A000, 0x6000, "store"),
         "otadata": Partition(1, 0, 0x7FE000, 0x2000, "otadata"),
-        "pool_0": Partition(1, 0x40, 0x180000, 0x1D6000, "pool_0"),
+        "pool_0": Partition(1, 0x40, pool0_start, CARDID_OFFSET-pool0_start, "pool_0"),
         "pool_1": Partition(1, 0x40, 0x360000, 0x49E000, "pool_1"),
     }
     for label, wanted in expected.items():
@@ -131,8 +151,8 @@ def verify_protected_layout(merged: bytes, build_dir: Path) -> None:
 
     app_path = build_dir / "FoloToy-AI-Passport.bin"
     app_size = app_path.stat().st_size
-    if app_size > APP_MAX_SIZE:
-        raise ValueError(f"application is {app_size} bytes; limit is {APP_MAX_SIZE}")
+    if app_size > app_limit:
+        raise ValueError(f"application is {app_size} bytes; limit is {app_limit}")
     if len(merged) <= 0x10000 or merged[0x10000] != 0xE9:
         raise ValueError("merged artifact has no ESP application image at 0x10000")
 
@@ -145,7 +165,7 @@ def verify_protected_layout(merged: bytes, build_dir: Path) -> None:
     if any(byte != 0xFF for byte in payload):
         raise ValueError("merged artifact contains forbidden cardid payload bytes")
 
-    print(f"Protected firmware layout: PASS (app {app_size} / {APP_MAX_SIZE} bytes)")
+    print(f"Protected firmware layout: PASS (app {app_size} / {app_limit} bytes)")
 
 
 def verify_upgrade_safety(merged: bytes) -> None:
@@ -156,7 +176,12 @@ def verify_upgrade_safety(merged: bytes) -> None:
     里这些区域必须全 0xFF——若未来构建流程把数据烧进了这些区域,说明布局
     契约被破坏,必须立即失败而不是静默抹掉用户数据。
     """
+    parts, _ = parse_partition_table(merged[PARTITION_TABLE_OFFSET:PARTITION_TABLE_OFFSET+PARTITION_TABLE_SIZE])
+    factory = next((p for p in parts if p.label == "factory"), None)
     for label, offset, size in UPGRADE_PRESERVED_REGIONS:
+        if label == "pool_0" and factory is not None and factory.size == 0x200000:
+            offset = factory.end
+            size = CARDID_OFFSET - offset
         region = merged[offset : offset + size]
         if len(region) < size:
             raise ValueError(f"merged artifact truncated inside {label} region")

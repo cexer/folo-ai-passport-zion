@@ -43,8 +43,13 @@
 #include "meta_store_install.h"
 #include "meta_store_prov.h"
 #include "ui_pixel.h"
+#include "zion_prefs.h"
+#include "zion_text.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 
-static const char *TAG = "meta-pass";
+static const char *TAG = "zion";
 
 #if CONFIG_META_E2E_TEST_CONTROL
 void meta_e2e_control_start(meta_slot_info_t slots[META_SLOT_COUNT]);
@@ -55,6 +60,8 @@ typedef enum {
     PAGE_LIST = 0,     // 槽位列表 + Store 入口(一键启动,签名与否都不再确认;
                        // 详情页/未签名警告页/删除确认页全移除 —— 上游 48e85590,
                        // 设备端删除由网页重灌替代)
+    PAGE_OPTIONS,
+    PAGE_SETTINGS,
     PAGE_EGG,          // 彩蛋页:隐藏序列进入,滚动查看 MAEG 文本
     PAGE_STORE_NET,    // P0 商店:配网/连接状态
     PAGE_STORE_QR,     // P1 商店:QR + 配对码(本地 install 服务已启动)
@@ -69,13 +76,14 @@ typedef enum {
 //   行0..3 = 槽窗口(≤4 个真实 APP 槽,滑动) / 行4 = STORE(固定入口)
 // FREE 不是可选项,2026-10-04 真机反馈:独占一行且深色底像"黑框",
 // 挪到草地页脚当状态文字(见 s_free_lbl)。
-#define LIST_ROWS       5
+#define LIST_ROWS       6
 #define LIST_SLOT_WIN   4
-#define LIST_ROW_STORE  4
+#define LIST_ROW_STORE  LIST_SLOT_WIN
+#define LIST_ROW_SETTINGS (LIST_ROW_STORE + 1)
 #define LIST_ROW_H      34
-#define LIST_ROW_Y0     50
+#define LIST_ROW_Y0     40
 #define LIST_ROW_PITCH  38
-#define UI_ROWS_MAX     5                   // s_rows 容量 = 各页行数上限(列表页最大)
+#define UI_ROWS_MAX     LIST_ROWS                   // s_rows 容量 = 各页行数上限(列表页最大)
 // 商店会话超时不再"到点即关":到期提示用户决策(OK=保留 / LONG=退出),见 store_tick。
 // 超时时长默认 CONFIG_META_STORE_SESSION_TIMEOUT_MS,运行时可用
 // meta_store_session_set_timeout_ms 覆盖(见 meta_store_net.h)。
@@ -126,18 +134,127 @@ static bool     s_store_expired;                 // 会话已到期,等待用户
 static lv_obj_t *s_timeout_panel;                // 到期提示浮层本体(ui_pixel_panel 立体框)
 static lv_obj_t *s_timeout_lbl;                  // 浮层标签(s_timeout_panel 子对象)
 
+/* Zion boot policy is enforced before every child launch. Preferences live in
+ * reserved store scratch, outside the child-shared NVS. */
+typedef struct { bsp_btn_t button; bsp_btn_ev_t event; } zion_key_t;
+static QueueHandle_t s_key_queue;
+static zion_prefs_t s_prefs;
+static volatile bool s_boot_cancel;
+static bool s_skip_once;
+static bool s_autostart;
+static int64_t s_autostart_deadline;
+static bool s_settings_wifi;
+static char s_notice[64] = "短按OK启动  长按OK管理";
+static lv_obj_t *s_notice_label;
+static lv_obj_t *s_battery_box;
+static lv_obj_t *s_battery_fill;
+static lv_obj_t *s_battery_percent;
+
+static bool zion_slot_hash(int slot, uint8_t out[32])
+{
+    if (slot < 0 || slot >= META_SLOT_COUNT || !meta_slot_bootable(&s_slots[slot])) return false;
+    for (int i = 0; i < 32; ++i) {
+        unsigned value = 0;
+        if (sscanf(s_slots[slot].sha256_hex + i * 2, "%2x", &value) != 1) return false;
+        out[i] = (uint8_t)value;
+    }
+    return true;
+}
+
+static int zion_default_slot(void)
+{
+    if (!(s_prefs.flags & ZION_PREFS_ENABLED)) return -1;
+    const meta_carve_t *c = meta_carve_flash_carve();
+    for (int i = 0; i < (int)c->count; ++i) {
+        uint8_t sha[32];
+        if (c->slot[i].kind == META_CARVE_KIND_APP &&
+            c->slot[i].play_id == s_prefs.play_id && c->slot[i].offset == s_prefs.offset &&
+            zion_slot_hash(i, sha) && memcmp(sha, s_prefs.sha256, sizeof(sha)) == 0) return i;
+    }
+    return -1;
+}
+
+static esp_err_t zion_default_set(int slot)
+{
+    zion_prefs_t next = s_prefs;
+    if (slot < 0) next.flags = 0;
+    else {
+        const meta_carve_t *c = meta_carve_flash_carve();
+        if (slot >= (int)c->count || !zion_slot_hash(slot, next.sha256)) return ESP_ERR_INVALID_ARG;
+        next.play_id = c->slot[slot].play_id;
+        next.offset = c->slot[slot].offset;
+        next.flags = ZION_PREFS_ENABLED;
+    }
+    const esp_err_t err = zion_prefs_save(&next);
+    if (err == ESP_OK) s_prefs = next;
+    ESP_LOGI(TAG, "ZION_DEFAULT slot=%d status=%s", slot, esp_err_to_name(err));
+    return err;
+}
+
+static void zion_boot(int slot)
+{
+    if (slot < 0 || !meta_slot_bootable(&s_slots[slot])) return;
+    const esp_err_t err = meta_store_boot_slot(slot);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "ZION_BOOT slot=%d", slot);
+        esp_restart();
+    }
+    snprintf(s_notice, sizeof(s_notice), "启动失败：%s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "ZION_BOOT failed slot=%d status=%s", slot, esp_err_to_name(err));
+}
+
 // ---------- 公共小部件 ----------
 
-// 右上角电量:读数 -1(不可用)时不画,避免显示假数字;位置在白云(188,8)下方的空闲蓝天区。
+static void battery_deleted(lv_event_t *event)
+{
+    if (lv_event_get_target_obj(event) == s_battery_box) {
+        s_battery_box = NULL;
+        s_battery_fill = NULL;
+        s_battery_percent = NULL;
+    }
+}
+
+static void battery_render(int soc)
+{
+    if (!s_battery_box) return;
+    if (soc > 100) soc = 100;
+    char text[12];
+    if (soc < 0) snprintf(text, sizeof(text), "?");
+    else snprintf(text, sizeof(text), "%d%%", soc);
+    lv_label_set_text(s_battery_percent, text);
+    lv_obj_set_width(s_battery_fill, soc > 0 ? 34 * soc / 100 : 0);
+    lv_obj_set_style_bg_color(s_battery_fill, lv_color_hex(soc < 20 ? 0x633326 : 0x425637), 0);
+}
+
+// Vector battery frame; percentage remains readable over the progress background.
 static void add_battery(lv_obj_t *parent)
 {
     const int soc = bsp_battery_soc();
-    char text[12];
-    // 读数 -1(不可用)时不画,避免用未初始化缓冲区显示垃圾并触发越界读。
     if (soc < 0) return;
-    snprintf(text, sizeof(text), "%d%%", soc);
-    lv_obj_t *lbl = ui_pixel_label(parent, text, &lv_font_montserrat_14, UI_PAPER);
-    lv_obj_set_pos(lbl, 204, 30);
+    s_battery_box = lv_obj_create(parent);
+    lv_obj_remove_style_all(s_battery_box);
+    lv_obj_remove_flag(s_battery_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(s_battery_box, 194, 9);
+    lv_obj_set_size(s_battery_box, 36, 14);
+    lv_obj_set_style_border_width(s_battery_box, 1, 0);
+    lv_obj_set_style_border_color(s_battery_box, lv_color_hex(UI_INK2), 0);
+    lv_obj_set_style_bg_color(s_battery_box, lv_color_hex(UI_SKY), 0);
+    lv_obj_set_style_bg_opa(s_battery_box, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(s_battery_box, battery_deleted, LV_EVENT_DELETE, NULL);
+    s_battery_fill = lv_obj_create(s_battery_box);
+    lv_obj_remove_style_all(s_battery_fill);
+    lv_obj_set_size(s_battery_fill, 0, 12);
+    lv_obj_set_style_bg_opa(s_battery_fill, LV_OPA_COVER, 0);
+    s_battery_percent = ui_pixel_label(s_battery_box, "", ZION_FONT, UI_INK);
+    lv_obj_set_style_text_font(s_battery_percent, &lv_font_unscii_8, 0);
+    lv_obj_center(s_battery_percent);
+    lv_obj_t *cap = lv_obj_create(parent);
+    lv_obj_remove_style_all(cap);
+    lv_obj_set_pos(cap, 231, 13);
+    lv_obj_set_size(cap, 2, 6);
+    lv_obj_set_style_bg_color(cap, lv_color_hex(UI_INK2), 0);
+    lv_obj_set_style_bg_opa(cap, LV_OPA_COVER, 0);
+    battery_render(soc);
 }
 
 // 可选中行(定高版);selected 高亮。行文本随后用 lv_label_set_text 更新。
@@ -146,7 +263,7 @@ static lv_obj_t *add_row_h(lv_obj_t *parent, int idx, int y, int h, const char *
     lv_obj_t *panel = ui_pixel_panel_create_shadowed(parent, 12, y, 216, h, UI_PAPER,
                                                      idx < LIST_SLOT_WIN ? &s_row_shadow[idx] : NULL);
     lv_obj_t *lbl = lv_label_create(panel);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl, ZION_FONT, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(UI_INK), 0);
     lv_obj_center(lbl);
     lv_label_set_text(lbl, text);
@@ -162,7 +279,7 @@ static lv_obj_t *add_row_h_muted(lv_obj_t *parent, int idx, int y, int h, const 
     lv_obj_set_style_border_width(panel, 2, 0);
     lv_obj_set_style_border_color(panel, lv_color_hex(UI_INK2), 0);
     lv_obj_t *lbl = lv_label_create(panel);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl, ZION_FONT, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(UI_INK2), 0);
     lv_obj_center(lbl);
     lv_label_set_text(lbl, text);
@@ -209,6 +326,7 @@ static void page_teardown(void)
         s_egg_panel = NULL;
         s_mascot = NULL;
         s_free_lbl = NULL;
+        s_notice_label = NULL;
         for (int r = 0; r < LIST_SLOT_WIN; r++) s_row_shadow[r] = NULL;
         s_timeout_panel = NULL;   // 浮层与影子都是 s_scr 子对象,随屏一起销毁
         s_timeout_lbl = NULL;
@@ -249,116 +367,134 @@ static void list_win_fit(void)
 // 行导航:物品空间(FREE 不是物品,自然跳过);窗口边缘滑动,端点 wrap。
 static void list_cursor_move(int dir)
 {
-    if (dir < 0) {
-        if (s_sel > 0) {
-            s_sel--;
-        } else if (s_list_win > 0) {
-            s_list_win--;              // 顶边还有更多槽:滑窗,选中停在行0
-        } else if (s_list_n > 0) {
-            s_sel = s_list_n;          // 到顶 wrap → STORE
-        }
-    } else {
-        if (s_sel < s_list_n) s_sel++;  // 槽间移动(含最后一槽 → STORE)
-        else if (s_list_n > 0) {        // STORE wrap → 首槽
-            s_sel = 0;
-            s_list_win = 0;
-        }
-    }
+    s_sel = zion_list_move(s_sel, s_list_n, dir);
     list_win_fit();
 }
 
 // 剩余空间行:meta_carve_free = 池总量 - 已占(容量语义);整数防浮点截断。
-static void list_free_text(char *out, size_t cap)
-{
-    const uint32_t b = meta_carve_free(meta_carve_flash_carve());
-    const uint32_t mb = 1024u * 1024u;
-    if (b >= mb) {
-        snprintf(out, cap, "FREE %u.%u MB",
-                 (unsigned)(b / mb), (unsigned)(((b % mb) * 10u) / mb));
-    } else {
-        snprintf(out, cap, "FREE %u KB", (unsigned)(b / 1024u));
-    }
-}
-
 static void list_refresh(void)
 {
-    const int k = list_visible();
-    for (int r = 0; r < LIST_SLOT_WIN; r++) {
-        lv_obj_t *lbl = lv_obj_get_child(s_rows[r], 0);
-        if (!lbl) continue;
-        if (r >= k) {
-            // 槽位数 < 窗口行数:整行隐藏(2026-10-04 真机反馈:空标签行
-            // 渲染成"空白按钮",像坏掉的槽位)。选中逻辑走 s_list_n,
-            // 隐藏行永远不会被选;FREE/STORE 行位置不变。
-            lv_obj_add_flag(s_rows[r], LV_OBJ_FLAG_HIDDEN);
-            if (s_row_shadow[r]) lv_obj_add_flag(s_row_shadow[r], LV_OBJ_FLAG_HIDDEN);
-            continue;
-        }
-        lv_obj_clear_flag(s_rows[r], LV_OBJ_FLAG_HIDDEN);
-        if (s_row_shadow[r]) lv_obj_clear_flag(s_row_shadow[r], LV_OBJ_FLAG_HIDDEN);
-        char text[48];
-        const int i = s_list_slots[s_list_win + r];
-        switch (s_slots[i].state) {
-        case META_SLOT_VALID:
-            snprintf(text, sizeof(text), "SLOT %d: %.20s", i,
-                     meta_slot_core_name(&s_slots[i]));
-            break;
-        case META_SLOT_INVALID:
-            // r10 措辞:有数据但非可引导固件 —— 单一事实源 meta_slots.c
-            // (host 测试钉死;安装 esp_ota_begin 先擦除,槽位完全可复用)。
-            snprintf(text, sizeof(text), "SLOT %d: %s", i,
-                     meta_slot_list_word(s_slots[i].state));
-            break;
-        default:
-            snprintf(text, sizeof(text), "SLOT %d: %s", i,
-                     meta_slot_list_word(s_slots[i].state));
-            break;
-        }
-        lv_label_set_text(lbl, text);
+    const int visible = list_visible();
+    const int default_slot = zion_default_slot();
+    const meta_carve_t *c = meta_carve_flash_carve();
+    for (int row = 0; row < LIST_SLOT_WIN; ++row) {
+        lv_obj_t *panel = s_rows[row];
+        if (row >= visible) { lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN); continue; }
+        lv_obj_clear_flag(panel, LV_OBJ_FLAG_HIDDEN);
+        const int slot = s_list_slots[s_list_win + row];
+        char title[64], detail[80];
+        snprintf(title, sizeof(title), "%s",
+                 meta_slot_bootable(&s_slots[slot]) ? meta_slot_core_name(&s_slots[slot]) : "[无有效固件]");
+        snprintf(detail, sizeof(detail), "#%lu  %luK  %.15s",
+                 (unsigned long)c->slot[slot].play_id, (unsigned long)(s_slots[slot].size / 1024),
+                 s_slots[slot].version);
+        lv_obj_t *name = lv_obj_get_child(panel, 0);
+        lv_obj_t *mark = lv_obj_get_child(panel, 2);
+        lv_obj_set_width(name, slot == default_slot ? 188 : 208);
+        lv_label_set_text(name, title);
+        if (slot == default_slot) {
+            lv_point_t extent;
+            lv_text_get_size(&extent, title, ZION_FONT, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            lv_obj_set_pos(mark, 7 + (extent.x < 188 ? extent.x : 188), -1);
+            lv_obj_clear_flag(mark, LV_OBJ_FLAG_HIDDEN);
+        } else lv_obj_add_flag(mark, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(lv_obj_get_child(panel, 1), detail);
+        ui_pixel_set_selected(panel, s_sel < s_list_n && s_sel - s_list_win == row, true);
     }
+    lv_obj_set_pos(s_rows[LIST_ROW_STORE], 10, LIST_ROW_Y0 + visible * LIST_ROW_PITCH);
+    ui_pixel_set_selected(s_rows[LIST_ROW_STORE], s_sel == s_list_n, true);
+    lv_obj_set_pos(s_rows[LIST_ROW_SETTINGS], 10,
+                   LIST_ROW_Y0 + (visible + 1) * LIST_ROW_PITCH);
+    ui_pixel_set_selected(s_rows[LIST_ROW_SETTINGS], s_sel == s_list_n + 1, true);
     if (s_free_lbl) {
-        char text[32];
-        list_free_text(text, sizeof(text));
-        lv_label_set_text(s_free_lbl, text);
+        char info[56];
+        snprintf(info, sizeof(info), "已安装%d款", s_list_n);
+        lv_label_set_text(lv_obj_get_child(s_free_lbl, 0), info);
+        snprintf(info, sizeof(info), "空闲%luK", (unsigned long)(meta_carve_free(c) / 1024));
+        lv_label_set_text(lv_obj_get_child(s_free_lbl, 1), info);
+        snprintf(info, sizeof(info), "连续%luK", (unsigned long)(meta_carve_largest_gap(c) / 1024));
+        lv_label_set_text(lv_obj_get_child(s_free_lbl, 2), info);
+        int32_t widths[3], total = 0;
+        for (unsigned i = 0; i < 3; ++i) {
+            lv_point_t extent;
+            lv_text_get_size(&extent, lv_label_get_text(lv_obj_get_child(s_free_lbl, i)),
+                             ZION_FONT, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            widths[i] = extent.x;
+            total += extent.x;
+        }
+        const int32_t gap = total < 220 ? (220 - total) / 2 : 0;
+        int32_t x = 0;
+        for (unsigned i = 0; i < 3; ++i) {
+            lv_obj_set_pos(lv_obj_get_child(s_free_lbl, i), x, 0);
+            x += widths[i] + gap;
+        }
     }
-    // STORE 跟槽位走:钉死在窗口第 3 行会在槽少时与最后一槽之间留死空
-    // (2026-10-04 真机反馈)。槽行隐藏/显示后按可见槽数 k 重定位,
-    // 0 槽时 STORE 顶到窗口首行。STORE 是无影 plain 面板,单对象移动即可。
-    lv_obj_set_pos(s_rows[LIST_ROW_STORE], 12, LIST_ROW_Y0 + k * LIST_ROW_PITCH);
-
-    // 行级 enabled:槽行/STORE 可选。
-    const bool fit[LIST_ROWS] = { true, true, true, true, true };
-    const int row_sel = (s_sel < s_list_n) ? (s_sel - s_list_win) : LIST_ROW_STORE;
-    rows_refresh_fit(LIST_ROWS, row_sel, fit);
-    // 非物品行降级必须在选中刷新后存活:ui_pixel_set_selected 会把边框重刷
-    // 成主墨色(真机反馈:导航后 STORE 与槽位视觉一致)。对未选中的
-    // FREE/STORE 重断言次级墨边;选中态(STORE)保持白边黄底不动。
-    for (int idx = LIST_ROW_STORE; idx <= LIST_ROW_STORE; idx++) {
-        if (idx == row_sel) continue;
-        lv_obj_set_style_border_color(s_rows[idx], lv_color_hex(UI_INK2), 0);
-    }
+    if (s_notice_label) lv_label_set_text(s_notice_label, s_notice);
 }
 
 static void page_list_build(void)
 {
-    s_scr = ui_pixel_screen_create("meta-pass");
+    s_scr = ui_pixel_screen_create("ZION / 玩法");
     list_scan_slots();
-    s_sel = 0;                       // 物品下标;无槽时 0 = STORE(n=0)
-    for (int r = 0; r < LIST_SLOT_WIN; r++) {
-        add_row_h(s_scr, r, LIST_ROW_Y0 + r * LIST_ROW_PITCH, LIST_ROW_H, "");
+    s_sel = 0;
+    for (int row = 0; row < LIST_SLOT_WIN; ++row) {
+        lv_obj_t *panel = ui_pixel_panel_create_plain(s_scr, 10,
+            LIST_ROW_Y0 + row * LIST_ROW_PITCH, 220, LIST_ROW_H, UI_PAPER);
+        s_rows[row] = panel;
+        lv_obj_t *name = ui_pixel_label(panel, "", ZION_FONT, UI_INK);
+        lv_obj_set_pos(name, 3, -1);
+        lv_obj_set_width(name, 208);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+        lv_obj_t *meta = ui_pixel_label(panel, "", ZION_FONT, UI_INK2);
+        lv_obj_set_style_text_font(meta, &lv_font_unscii_8, 0);
+        lv_obj_set_pos(meta, 3, 18);
+        lv_obj_set_width(meta, 208);
+        lv_label_set_long_mode(meta, LV_LABEL_LONG_DOT);
+        lv_obj_t *mark = ui_pixel_label(panel, "*", ZION_FONT, UI_INK);
+        lv_obj_add_flag(mark, LV_OBJ_FLAG_HIDDEN);
     }
-    add_row_h_muted(s_scr, LIST_ROW_STORE, LIST_ROW_Y0 + LIST_ROW_STORE * LIST_ROW_PITCH,
-                    LIST_ROW_H, "STORE DOWNLOAD");
+    add_row_h_muted(s_scr, LIST_ROW_STORE, 232, LIST_ROW_H, "+ 安装玩法");
+    lv_obj_set_width(s_rows[LIST_ROW_STORE], 220);
+    add_row_h_muted(s_scr, LIST_ROW_SETTINGS, 232, LIST_ROW_H, "设置");
+    lv_obj_set_width(s_rows[LIST_ROW_SETTINGS], 220);
     add_battery(s_scr);
-    // FREE 放草地页脚(y≈292,UI_GRASS 亮绿底 + 深色小字,见 list_free_text)。
-    {
-        char text[32];
-        list_free_text(text, sizeof(text));
-        s_free_lbl = ui_pixel_label(s_scr, text, &lv_font_montserrat_14, UI_INK);
-        lv_obj_set_pos(s_free_lbl, 148, 292);
-    }
-    s_mascot = ui_pixel_mascot_create(s_scr, 101, 242);
+    s_free_lbl = lv_obj_create(s_scr);
+    lv_obj_remove_style_all(s_free_lbl);
+    lv_obj_remove_flag(s_free_lbl, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(s_free_lbl, 10, 270);
+    lv_obj_set_size(s_free_lbl, 220, 17);
+    for (unsigned i = 0; i < 3; ++i)
+        (void)ui_pixel_label(s_free_lbl, "", ZION_FONT, UI_INK2);
+    s_notice_label = ui_pixel_label(s_scr, s_notice, ZION_FONT, UI_INK);
+    lv_obj_set_style_text_font(s_notice_label, ZION_FONT, 0);
+    lv_obj_set_pos(s_notice_label, 10, 296);
     list_refresh();
+    lv_screen_load(s_scr);
+}
+
+static void page_options_build(void)
+{
+    s_scr = ui_pixel_screen_create("ZION / 管理");
+    s_sel = 0;
+    add_row(s_scr, 0, 58, "运行一次");
+    add_row(s_scr, 1, 108, zion_default_slot() == s_detail_slot ? "取消默认" : "设为默认");
+    add_row(s_scr, 2, 158, "返回");
+    rows_refresh(3, s_sel);
+    lv_obj_t *hint = ui_pixel_label(s_scr, "* 表示开机默认玩法", ZION_FONT, UI_INK2);
+    lv_obj_set_pos(hint, 12, 222);
+    lv_screen_load(s_scr);
+}
+
+static void page_settings_build(void)
+{
+    s_scr = ui_pixel_screen_create("ZION / 设置");
+    add_row(s_scr, 0, 58, "Wi-Fi 状态与配网");
+    add_row(s_scr, 1, 108, "更换 Wi-Fi");
+    add_row(s_scr, 2, 158, "返回");
+    rows_refresh(3, s_sel);
+    lv_obj_t *hint = ui_pixel_label(s_scr, "短按OK选择  长按OK返回", ZION_FONT, UI_INK2);
+    lv_obj_set_pos(hint, 10, 296);
+    add_battery(s_scr);
     lv_screen_load(s_scr);
 }
 
@@ -368,7 +504,7 @@ static void page_list_build(void)
 
 static void page_egg_build(void)
 {
-    s_scr = ui_pixel_screen_create("EGG");
+    s_scr = ui_pixel_screen_create("彩蛋");
     // 可滚动面板:文本最长 3919B,远超一屏;UP/DOWN 按行滚动,OK 短按返回。
     s_egg_panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 180, UI_PAPER);
     lv_obj_set_scroll_dir(s_egg_panel, LV_DIR_VER);
@@ -378,18 +514,18 @@ static void page_egg_build(void)
     const meta_slot_info_t *s = &s_slots[s_detail_slot];
     const char *text;
     if (s->state != META_SLOT_VALID) {
-        text = "No egg.";
+        text = "此玩法没有彩蛋。";
     } else {
         const meta_egg_result_t r = meta_store_read_egg(s_detail_slot, s->size,
                                                         egg_buf, sizeof(egg_buf));
         text = (r == META_EGG_OK)     ? egg_buf
-             : (r == META_EGG_ABSENT) ? "No egg."
-                                      : "Egg data corrupted.";
+             : (r == META_EGG_ABSENT) ? "此玩法没有彩蛋。"
+                                      : "彩蛋数据损坏。";
     }
 
     lv_obj_t *lbl = lv_label_create(s_egg_panel);
     lv_obj_set_width(lbl, 196);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl, ZION_FONT, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(UI_INK), 0);
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
     lv_label_set_text_static(lbl, text);
@@ -416,22 +552,17 @@ static void store_show_timeout_prompt(void)
     s_timeout_panel = ui_pixel_panel_create(s_scr, 32, 196, 176, 78, UI_PAPER);
     s_timeout_lbl = lv_label_create(s_timeout_panel);
     lv_obj_set_width(s_timeout_lbl, 148);
-    lv_obj_set_style_text_font(s_timeout_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_timeout_lbl, ZION_FONT, 0);
     lv_obj_set_style_text_color(s_timeout_lbl, lv_color_hex(UI_INK), 0);
     lv_obj_set_style_text_align(s_timeout_lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(s_timeout_lbl, "Session timeout.\nOK = continue\nLONG = exit store");
+    lv_label_set_text(s_timeout_lbl, "操作已超时\nOK 继续\n长按退出安装");
     lv_obj_center(s_timeout_lbl);
 }
 
 static void store_clear_timeout_prompt(void)
 {
-    // 只删面板会留下孤儿影子块(ui_pixel_panel_create 先铺影子再放面板,
-    // 两个兄弟对象),按子索引把前一个兄弟一起拆;防御性判断防误删。
+    // Zion uses a single flat panel. Never delete a neighboring page object.
     if (s_timeout_panel) {
-        lv_obj_t *parent = lv_obj_get_parent(s_timeout_panel);
-        const int32_t idx = (int32_t)lv_obj_get_index(s_timeout_panel);
-        lv_obj_t *shadow = (parent && idx > 0) ? lv_obj_get_child(parent, idx - 1) : NULL;
-        if (shadow) lv_obj_delete(shadow);
         lv_obj_delete(s_timeout_panel);
         s_timeout_panel = NULL;
         s_timeout_lbl = NULL;
@@ -474,12 +605,12 @@ static bool st_is_credentialed(void)
 
 static void page_store_net_build(void)
 {
-    s_scr = ui_pixel_screen_create("STORE");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 178, UI_PAPER);
+    s_scr = ui_pixel_screen_create(s_settings_wifi ? "Wi-Fi 设置" : "安装玩法");
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 210, UI_PAPER);
 
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
-    lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_info, ZION_FONT, 0);
     lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
 
@@ -488,13 +619,13 @@ static void page_store_net_build(void)
     char text[200];
     if (st.state == SN_STATE_AP_UP) {
         snprintf(text, sizeof(text),
-                 "WiFi setup:\nhotspot: %s\n\nSetup page opens by\nitself. If not, open\nhttp://192.168.4.1\nPick network + password",
+                 "Wi-Fi 配网\n连接热点：%s\n\n打开自动弹出的页面\n或访问以下地址\nhttp://192.168.4.1\n选择网络并输入密码",
                  st.ssid);
         lv_label_set_text(s_info, text);
         s_net_online_at = 0;
         meta_prov_upclick_reset(&s_net_upclick);
     } else {
-        snprintf(text, sizeof(text), "%s\n\nWiFi: %s", st.message,
+        snprintf(text, sizeof(text), "%s\n\nWi-Fi：%s", zion_text_zh(st.message),
                  st.sta_ssid[0] ? st.sta_ssid : "-");
         lv_label_set_text(s_info, text);
         // 已存凭证路径:r10.1 起改网入口 = 双击 UP(见按键分发);不再有
@@ -506,12 +637,14 @@ static void page_store_net_build(void)
 
     s_status_line = lv_label_create(panel);
     lv_obj_set_width(s_status_line, 196);
-    lv_obj_set_style_text_font(s_status_line, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_status_line, ZION_FONT, 0);
     lv_obj_set_style_text_color(s_status_line, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
-    if (st.state != SN_STATE_AP_UP) {
+    if (s_settings_wifi) {
+        lv_label_set_text(s_status_line, "长按OK返回设置");
+    } else if (st.state != SN_STATE_AP_UP) {
         lv_label_set_text(s_status_line,
-                          "double-UP = change WiFi\nhold OK = exit");
+                          "双击上键更换 Wi-Fi\n长按 OK 退出");
     } else {
         lv_label_set_text(s_status_line, "");
     }
@@ -529,17 +662,17 @@ static void page_store_net_build(void)
 static void page_store_qr_build(void)
 {
     s_offer_valid = false;   // 回到扫码页即丢弃本地 offer 快照(重 prepare 再取)
-    s_scr = ui_pixel_screen_create("SCAN ME");
+    s_scr = ui_pixel_screen_create("扫码安装");
 
     if (s_qr_service_failed) {
         // 本地 install 服务启动失败:QR 无意义(手机连不上),文字交代后果。
         lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 92, 216, 100, UI_PAPER);
         s_info = lv_label_create(panel);
         lv_obj_set_width(s_info, 196);
-        lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(s_info, ZION_FONT, 0);
         lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
         lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
-        lv_label_set_text(s_info, "LAN install service\nfailed to start.\nHold OK = exit");
+        lv_label_set_text(s_info, "LAN 安装服务\n启动失败\n长按 OK 退出");
         add_battery(s_scr);
         store_touch();
         s_store_timer = lv_timer_create(store_tick, 250, NULL);
@@ -571,8 +704,8 @@ static void page_store_qr_build(void)
             lv_obj_t *cv = lv_canvas_create(s_scr);
             lv_canvas_set_buffer(cv, s_qr_canvas_buf, 120, 120,
                                  LV_COLOR_FORMAT_RGB565);
-            lv_canvas_fill_bg(cv, lv_color_hex(UI_PAPER), LV_OPA_COVER);
-            const lv_color_t ink = lv_color_hex(UI_INK);
+            lv_canvas_fill_bg(cv, lv_color_hex(0xffffff), LV_OPA_COVER);
+            const lv_color_t ink = lv_color_hex(0x000000);
             int dark = 0;
             for (int my = 0; my < size; my++) {
                 for (int mx = 0; mx < size; mx++) {
@@ -604,7 +737,7 @@ static void page_store_qr_build(void)
     lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 171, 216, 104, UI_PAPER);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
-    lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_info, ZION_FONT, 0);
     lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
     {
@@ -619,17 +752,17 @@ static void page_store_qr_build(void)
         // 叠字 —— 真机 bug,靠加高解决而不是减行)。
         char text[128];
         snprintf(text, sizeof(text),
-                 "scan QR, or open:\nhttp://%s\npair code: %s\nStay here while installing",
+                 "扫码或打开：\nhttp://%s\n配对码：%s\n安装时请停留本页",
                  ip_txt, (pair && !token_hex) ? "-" : (pair ? pair : "-"));
         lv_label_set_text(s_info, text);
     }
 
     s_status_line = lv_label_create(panel);
     lv_obj_set_width(s_status_line, 196);
-    lv_obj_set_style_text_font(s_status_line, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_status_line, ZION_FONT, 0);
     lv_obj_set_style_text_color(s_status_line, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
-    lv_label_set_text(s_status_line, token_hex ? "waiting for phone..." : "token error");
+    lv_label_set_text(s_status_line, token_hex ? "等待手机连接" : "配对令牌异常");
 
     add_battery(s_scr);
     store_touch();
@@ -641,30 +774,30 @@ static void page_store_qr_build(void)
 // (进槽位页),行 1 = BACK(设备侧拒绝,手机可重新 prepare)。
 static void page_store_info_build(void)
 {
-    s_scr = ui_pixel_screen_create("INSTALL");
+    s_scr = ui_pixel_screen_create("确认安装");
     lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 138, UI_PAPER);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
-    lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_info, ZION_FONT, 0);
     lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
     char text[224];
     if (!s_offer_valid) {
         // 防御路径:P2 只应从 P1 携有效快照进入;置空快照时只给 BACK 出口。
-        snprintf(text, sizeof(text), "No pending offer.");
+        snprintf(text, sizeof(text), "暂无待确认的安装。");
     } else if (s_offer.reason[0] && strcmp(s_offer.reason, "ok") != 0) {
         // 手机侧判断非 ok(如 custom-partitions):原因句透传上屏。
         snprintf(text, sizeof(text),
-                 "Install: %.24s\n%lu KB\nNOTE: %.40s",
-                 s_offer.name, (unsigned long)(s_offer.image_len / 1024), s_offer.reason);
+                 "安装：%s\n%lu KB\n原因：%s",
+                 s_offer.name, (unsigned long)(s_offer.image_len / 1024), zion_text_zh(s_offer.reason));
     } else {
-        snprintf(text, sizeof(text), "Install: %.24s\n%lu KB",
+        snprintf(text, sizeof(text), "安装：%s\n%lu KB",
                  s_offer.name, (unsigned long)(s_offer.image_len / 1024));
     }
     lv_label_set_text(s_info, text);
 
-    add_row(s_scr, 0, 196, "CONFIRM");
-    add_row(s_scr, 1, 240, "BACK");
+    add_row(s_scr, 0, 196, "确认");
+    add_row(s_scr, 1, 240, "返回");
     s_sel = 0;
     rows_refresh(2, s_sel);
     add_battery(s_scr);
@@ -692,11 +825,11 @@ static void pick_refresh(void)
         const bool occupied = s_slots[i].state == META_SLOT_VALID;
         // 占用槽位标 "erase"(esp_ota_begin 先擦除,可覆盖);不适配槽位
         // 短写 "too small" 防超宽截断(同 r10.10)。
-        char text[24];
+        char text[64];
         if (s_slot_fit[i]) {
-            snprintf(text, sizeof(text), "SLOT %d%s", i, occupied ? " erase" : "");
+            snprintf(text, sizeof(text), "槽位 %d%s", i, occupied ? " 将覆盖" : "");
         } else {
-            snprintf(text, sizeof(text), "SLOT %d too small", i);
+            snprintf(text, sizeof(text), "槽位 %d 空间不足", i);
         }
         lv_label_set_text(lbl, text);
     }
@@ -709,16 +842,16 @@ static void pick_refresh(void)
 
 static void page_store_slot_build(void)
 {
-    s_scr = ui_pixel_screen_create("SLOT?");
+    s_scr = ui_pixel_screen_create("选择槽位");
     // 信息窗与按钮行拉开层次(同 r10.10:正文弱化,避免像两个乱码按钮)。
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 88, UI_MUTED);
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 44, 216, 48, UI_PAPER);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
-    lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_info, ZION_FONT, 0);
     lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
     char text[64];
-    snprintf(text, sizeof(text), "%.20s\n%lu KB -> pick slot",
+    snprintf(text, sizeof(text), "%s\n%lu KB，请选择槽位",
              s_offer_valid ? s_offer.name : "?",
              s_offer_valid ? (unsigned long)(s_offer.image_len / 1024) : 0);
     lv_label_set_text(s_info, text);
@@ -738,7 +871,7 @@ static void page_store_slot_build(void)
     }
     s_pick_rows = s_pick_n > LIST_SLOT_WIN ? LIST_SLOT_WIN : s_pick_n;
     for (int r = 0; r < s_pick_rows; r++) {
-        add_row(s_scr, r, 100 + r * 44, "");
+        add_row_h(s_scr, r, 100 + r * 34, 30, "");
     }
 
     // 默认选中建议槽位(模型层:suggestedSlot 本地 fit 才用,否则首个可用)。
@@ -768,24 +901,24 @@ static void page_store_slot_build(void)
 // P4 上传进度页:轮询 install 快照(手机开 session → 分块写入 → 终态)。
 static void page_store_dl_build(void)
 {
-    s_scr = ui_pixel_screen_create("UPLOAD");
+    s_scr = ui_pixel_screen_create("正在上传");
     lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 100, UI_PAPER);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
-    lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_info, ZION_FONT, 0);
     lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
     char text[64];
-    snprintf(text, sizeof(text), "Uploading...\n%.20s",
+    snprintf(text, sizeof(text), "正在上传\n%s",
              s_offer_valid ? s_offer.name : "");
     lv_label_set_text(s_info, text);
 
     s_status_line = lv_label_create(panel);
     lv_obj_set_width(s_status_line, 196);
-    lv_obj_set_style_text_font(s_status_line, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_status_line, ZION_FONT, 0);
     lv_obj_set_style_text_color(s_status_line, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
-    lv_label_set_text(s_status_line, "waiting session...");
+    lv_label_set_text(s_status_line, "等待上传会话");
     add_battery(s_scr);
     store_touch();
     s_store_timer = lv_timer_create(store_tick, 250, NULL);
@@ -798,17 +931,17 @@ static void page_store_dl_build(void)
 // P4b 取消确认页:进入时上传仍在后台进行,二选一决策(取消/继续等)。
 static void page_store_cancel_build(void)
 {
-    s_scr = ui_pixel_screen_create("CANCEL?");
+    s_scr = ui_pixel_screen_create("取消上传");
     lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 76, UI_PAPER);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
-    lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_info, ZION_FONT, 0);
     lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
-    lv_label_set_text(s_info, "Cancel upload?\nWritten data is erased.");
+    lv_label_set_text(s_info, "是否取消上传？\n未完成的镜像将作废。");
 
-    add_row(s_scr, 0, 136, "CANCEL");   // 取消:作废半成品(flash 动过即槽位 INVALID)
-    add_row(s_scr, 1, 180, "BACK");     // 返回:不作取消,继续等上传
+    add_row(s_scr, 0, 136, "取消上传");   // 取消:作废半成品(flash 动过即槽位 INVALID)
+    add_row(s_scr, 1, 180, "返回");     // 返回:不作取消,继续等上传
     s_sel = 1;                          // 默认 BACK(安全侧,同启动确认页纪律)
     rows_refresh(2, s_sel);
     add_battery(s_scr);
@@ -851,7 +984,7 @@ static void store_tick(lv_timer_t *t)
         // 浮层会冻结面板在最后一帧(v13 真机"Syncing clock 卡 200s"的根因:
         // 凭证路径 busy=false,浮层照常触发,画面停在旧文字,任务其实早已
         // 结束)。超时语义保留给 P1 之后的闲置(扫码页/进度页照旧问用户)。
-        if (st.state == SN_STATE_AP_UP || st.state == SN_STATE_CONNECTING
+        if (s_settings_wifi || st.state == SN_STATE_AP_UP || st.state == SN_STATE_CONNECTING
             || st.state == SN_STATE_ERROR) {
             store_touch();
         }
@@ -861,14 +994,16 @@ static void store_tick(lv_timer_t *t)
                 // r10.7:配网态每拍自动续期(BUG-07 教训),deadline 恒为满值 ——
                 // 显示它等于显示一个不动的假倒计时(真机实测)。热点态没有
                 // 超时压力,状态行显示真实状态句即可,不显示任何倒计时。
-                snprintf(line, sizeof(line), "%s", st.message);
+                snprintf(line, sizeof(line), "%s", zion_text_zh(st.message));
             } else {
                 // CONNECTING/ERROR:同样每拍续期,倒计时无意义;错误态把
                 // 原因句透传(比一个冻结的秒数有用得多)。
-                snprintf(line, sizeof(line), "%s", st.message[0] ? st.message
-                                        : "Connecting...");
+                snprintf(line, sizeof(line), "%s", st.message[0] ? zion_text_zh(st.message)
+                                        : "正在连接");
             }
-            lv_label_set_text(s_status_line, line);
+            if (s_settings_wifi) {
+                lv_label_set_text_fmt(s_status_line, "%s\n长按OK返回设置", line);
+            } else lv_label_set_text(s_status_line, line);
         }
         if (st.state == SN_STATE_ONLINE) {
             // ONLINE 进入时刻在 tick 里做跳变检测,不用 build 时的旧值 ——
@@ -879,7 +1014,7 @@ static void store_tick(lv_timer_t *t)
                 s_net_online_at = esp_timer_get_time() / 1000;
                 if (s_info) {
                     char text[200];
-                    snprintf(text, sizeof(text), "Online.\n\nWiFi: %s",
+                    snprintf(text, sizeof(text), "已联网\n\nWi-Fi：%s",
                              st.sta_ssid[0] ? st.sta_ssid : "-");
                     lv_label_set_text(s_info, text);
                 }
@@ -887,7 +1022,7 @@ static void store_tick(lv_timer_t *t)
             // 停留 2s 让用户看清连的哪个网,然后进 P1(§6.1 步骤 3/4):先起
             // 本地 install 服务,再签发 token/配对码;起服务失败粘滞上屏
             // (无服务时 QR 无意义,文字交代后果)。
-            if (esp_timer_get_time() / 1000 - s_net_online_at >= 2000) {
+            if (!s_settings_wifi && esp_timer_get_time() / 1000 - s_net_online_at >= 2000) {
                 s_qr_service_failed = (meta_install_net_start() != ESP_OK);
                 if (!s_qr_service_failed) {
                     (void)meta_install_token_start();
@@ -903,11 +1038,11 @@ static void store_tick(lv_timer_t *t)
                     && esp_timer_get_time() / 1000 - s_net_fail_at < 8000
                     && s_net_last_fail[0]) {
                     snprintf(text, sizeof(text),
-                             "Last try: %s\n\nWiFi setup:\nhotspot: %s\n\nhttp://192.168.4.1\nPick network + password",
-                             s_net_last_fail, st.ssid);
+                             "上次失败：%s\n\nWi-Fi 配网\n连接热点：%s\n\nhttp://192.168.4.1\n选择网络并输入密码",
+                             zion_text_zh(s_net_last_fail), st.ssid);
                 } else {
                     snprintf(text, sizeof(text),
-                             "WiFi setup:\nhotspot: %s\n\nSetup page opens by\nitself. If not, open\nhttp://192.168.4.1\nPick network + password",
+                             "Wi-Fi 配网\n连接热点：%s\n\n打开自动弹出的页面\n或访问以下地址\nhttp://192.168.4.1\n选择网络并输入密码",
                              st.ssid);
                 }
                 lv_label_set_text(s_info, text);
@@ -930,12 +1065,12 @@ static void store_tick(lv_timer_t *t)
                 if (st.state == SN_STATE_CONNECTING) {
                     const int secs = (int)((esp_timer_get_time() / 1000
                                             - s_net_connecting_at) / 1000);
-                    snprintf(text, sizeof(text), "%s (%ds)\n\nWiFi: %s",
-                             st.message, secs,
+                    snprintf(text, sizeof(text), "%s（%d秒）\n\nWi-Fi：%s",
+                             zion_text_zh(st.message), secs,
                              st.sta_ssid[0] ? st.sta_ssid : "-");
                 } else {
-                    snprintf(text, sizeof(text), "%s\n\nWiFi: %s",
-                             st.message, st.sta_ssid[0] ? st.sta_ssid : "-");
+                    snprintf(text, sizeof(text), "%s\n\nWi-Fi：%s",
+                             zion_text_zh(st.message), st.sta_ssid[0] ? st.sta_ssid : "-");
                 }
                 lv_label_set_text(s_info, text);
             }
@@ -969,7 +1104,7 @@ static void store_tick(lv_timer_t *t)
         }
         if (s_status_line) {
             lv_label_set_text(s_status_line,
-                              ist.message[0] ? ist.message : "waiting for phone...");
+                              zion_text_zh(ist.message)[0] ? zion_text_zh(ist.message) : "等待手机连接");
         }
         break;
     }
@@ -997,13 +1132,13 @@ static void store_tick(lv_timer_t *t)
         if (s_status_line) {
             char line[80];
             if (strcmp(ist_state, "failed") == 0) {
-                snprintf(line, sizeof(line), "failed: %.30s", ist.message);
+                snprintf(line, sizeof(line), "失败：%s", zion_text_zh(ist.message));
             } else if (ist.session_opened) {
                 snprintf(line, sizeof(line), "%u / %u KB",
                          (unsigned)(ist.offset / 1024),
                          (unsigned)(ist.expected / 1024));
             } else {
-                snprintf(line, sizeof(line), "waiting session...");
+                snprintf(line, sizeof(line), "等待上传会话");
             }
             lv_label_set_text(s_status_line, line);
         }
@@ -1050,6 +1185,8 @@ static void goto_page(page_t page)
     s_sel = 0;
     switch (page) {
     case PAGE_LIST:     page_list_build();               break;
+    case PAGE_OPTIONS: page_options_build(); break;
+    case PAGE_SETTINGS: page_settings_build(); break;
     case PAGE_EGG:      page_egg_build();                break;
     case PAGE_STORE_NET: page_store_net_build();         break;
     case PAGE_STORE_QR:  page_store_qr_build();          break;
@@ -1082,6 +1219,7 @@ static void store_goto(page_t page)
         s_status_line = NULL;
         s_mascot = NULL;
         s_free_lbl = NULL;
+        s_notice_label = NULL;
         for (int r = 0; r < LIST_SLOT_WIN; r++) s_row_shadow[r] = NULL;
         s_timeout_lbl = NULL;
         for (int i = 0; i < UI_ROWS_MAX; i++) s_rows[i] = NULL;
@@ -1101,7 +1239,7 @@ static void store_goto(page_t page)
 
 // ---------- 按键分发(运行于 button 组件任务,操作 LVGL 必须加锁) ----------
 
-static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
+static void on_key_dispatch(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 {
     (void)user;
     if (!bsp_lvgl_lock(500)) return;
@@ -1143,6 +1281,11 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
             meta_seq_reset(&s_egg_seq);
         }
 
+        if (ev == BSP_BTN_LONG && btn == BSP_BTN_OK && s_sel < s_list_n) {
+            s_detail_slot = s_list_slots[s_sel];
+            goto_page(PAGE_OPTIONS);
+            break;
+        }
         if (ev == BSP_BTN_CLICK) {
             if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
                 // 物品空间导航:FREE 行不是物品(自然跳过),窗口边缘滑动。
@@ -1155,11 +1298,11 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                     // 一键启动(签名与否同权,无确认页;上游 48e85590)。完整性仍由
                     // esp_image_verify/meta_slot_bootable 把守;不可启动槽位静默。
                     const int slot = s_list_slots[s_sel];
-                    if (meta_slot_bootable(&s_slots[slot])
-                        && meta_store_boot_slot(slot) == ESP_OK) {
-                        esp_restart();
-                    }
+                    zion_boot(slot);
+                } else if (s_sel == s_list_n + 1) {
+                    goto_page(PAGE_SETTINGS);
                 } else {
+                    s_settings_wifi = false;
                     if (meta_store_net_init() == ESP_OK
                         && meta_store_net_begin() == ESP_OK) {
                         goto_page(PAGE_STORE_NET);
@@ -1170,12 +1313,50 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
         break;
     }
 
+    case PAGE_SETTINGS:
+        if (ev == BSP_BTN_LONG && btn == BSP_BTN_OK) goto_page(PAGE_LIST);
+        else if (ev == BSP_BTN_CLICK) {
+            if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
+                s_sel = (s_sel + (btn == BSP_BTN_UP ? 2 : 1)) % 3;
+                rows_refresh(3, s_sel);
+            } else if (btn == BSP_BTN_OK) {
+                if (s_sel == 2) goto_page(PAGE_LIST);
+                else {
+                    const bool change = s_sel == 1;
+                    s_settings_wifi = true;
+                    if (meta_store_net_init() == ESP_OK) {
+                        if (change) (void)meta_store_net_reset_wifi();
+                        else (void)meta_store_net_begin();
+                        goto_page(PAGE_STORE_NET);
+                    }
+                }
+            }
+        }
+        break;
+
+    case PAGE_OPTIONS:
+        if (ev == BSP_BTN_LONG && btn == BSP_BTN_OK) goto_page(PAGE_LIST);
+        else if (ev == BSP_BTN_CLICK) {
+            if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
+                s_sel = (s_sel + (btn == BSP_BTN_UP ? 2 : 1)) % 3;
+                rows_refresh(3, s_sel);
+            } else if (btn == BSP_BTN_OK) {
+                if (s_sel == 0) zion_boot(s_detail_slot);
+                else if (s_sel == 1) {
+                    const esp_err_t e = zion_default_set(zion_default_slot() == s_detail_slot ? -1 : s_detail_slot);
+                    snprintf(s_notice, sizeof(s_notice), e == ESP_OK ? "默认玩法已保存" : "默认玩法保存失败");
+                    goto_page(PAGE_LIST);
+                } else goto_page(PAGE_LIST);
+            }
+        }
+        break;
+
     case PAGE_EGG:
         if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
             goto_page(PAGE_LIST);   // 短按退出;LONG 有意忽略(序列末键 PRESS 之后仍会有 CLICK 到达)
         } else if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) && ev == BSP_BTN_CLICK
                    && s_egg_panel) {
-            const int step = lv_font_get_line_height(&lv_font_montserrat_14) * 4;
+            const int step = lv_font_get_line_height(ZION_FONT) * 4;
             lv_obj_scroll_by(s_egg_panel, 0, btn == BSP_BTN_UP ? step : -step, LV_ANIM_OFF);
         }
         break;
@@ -1194,7 +1375,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
             }
         }
         if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            goto_page(PAGE_LIST);   // 退出商店(商店统一出口)
+            goto_page(s_settings_wifi ? PAGE_SETTINGS : PAGE_LIST);
         }
         break;
 
@@ -1240,7 +1421,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                     meta_install_confirm_slot((int8_t)slot) == ESP_OK) {
                     store_goto(PAGE_STORE_DL);
                 } else if (s_status_line && s_slot_fit[slot]) {
-                    lv_label_set_text(s_status_line, "cannot confirm slot");
+                    lv_label_set_text(s_status_line, "槽位层：无法确认");
                 }
             }
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
@@ -1290,11 +1471,62 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     bsp_lvgl_unlock();
 }
 
+/* Hardware callback only enqueues; storage, boot and UI work never run on the
+ * button component's timer task. Any press during boot cancels auto-launch. */
+void zion_key_inject(int button, int event)
+{
+    if (button < BSP_BTN_UP || button > BSP_BTN_OK || event < BSP_BTN_PRESS || event > BSP_BTN_LONG) return;
+    s_boot_cancel = true;
+    zion_key_t key = { .button = (bsp_btn_t)button, .event = (bsp_btn_ev_t)event };
+    if (s_key_queue) (void)xQueueSend(s_key_queue, &key, 0);
+}
+
+static void on_key(bsp_btn_t button, bsp_btn_ev_t event, void *user)
+{
+    (void)user;
+    zion_key_inject(button, event);
+}
+
+void zion_test_state(void)
+{
+    printf("{\"ok\":true,\"page\":%d,\"selected\":%d,\"apps\":%d,\"defaultSlot\":%d,\"autostart\":%s}\n",
+           (int)s_page, s_sel, s_list_n, zion_default_slot(), s_autostart ? "true" : "false");
+    fflush(stdout);
+}
+
+esp_err_t zion_test_default(int slot) { return zion_default_set(slot); }
+
+static void zion_ui_worker(void *arg)
+{
+    (void)arg;
+    int64_t battery_deadline = esp_timer_get_time() + 30000000;
+    for (;;) {
+        zion_key_t key;
+        if (xQueueReceive(s_key_queue, &key, pdMS_TO_TICKS(30)) == pdTRUE)
+            on_key_dispatch(key.button, key.event, NULL);
+        if (esp_timer_get_time() >= battery_deadline) {
+            battery_deadline = esp_timer_get_time() + 30000000;
+            const int soc = bsp_battery_soc();
+            if (bsp_lvgl_lock(200)) { battery_render(soc); bsp_lvgl_unlock(); }
+        }
+        if (s_autostart) {
+            if (s_boot_cancel) {
+                s_autostart = false;
+                snprintf(s_notice, sizeof(s_notice), "已取消自启，短按OK启动");
+                if (bsp_lvgl_lock(200)) { if (s_page == PAGE_LIST) list_refresh(); bsp_lvgl_unlock(); }
+            } else if (esp_timer_get_time() >= s_autostart_deadline) {
+                s_autostart = false;
+                zion_boot(zion_default_slot());
+            }
+        }
+    }
+}
+
 // ---------- 入口 ----------
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "meta-pass launcher 启动");
+    ESP_LOGI(TAG, "ZION launcher 0.1.0 startup");
 
     // dynslot 第一动作(design §4.4):ensure 只用 esp_flash_* 裸 API,必须先于
     // 任何分区 API —— IDF 把分区表一次性缓存进 RAM(5.5.3 无反向失效接口),
@@ -1318,6 +1550,8 @@ void app_main(void)
     bsp_display_backlight(100);
 
     // 按键/电池为软依赖:失败只影响对应能力,不阻塞启动器。
+    s_key_queue = xQueueCreate(16, sizeof(zion_key_t));
+    if (!s_key_queue) { ESP_LOGE(TAG, "ZION input queue allocation failed"); return; }
     if (bsp_button_init(on_key, NULL) != ESP_OK) {
         ESP_LOGE(TAG, "按键初始化失败,设备将无法操作");
     }
@@ -1335,11 +1569,20 @@ void app_main(void)
     }
 
     meta_store_scan(s_slots);
+    const esp_err_t prefs_status = zion_prefs_load(&s_prefs);
+    if (prefs_status != ESP_OK) {
+        s_boot_cancel = true;
+        ESP_LOGE(TAG, "ZION prefs read failed: %s", esp_err_to_name(prefs_status));
+    }
+    s_skip_once = (s_prefs.flags & ZION_PREFS_SKIP_ONCE) != 0;
+    if (s_skip_once) {
+        s_prefs.flags &= ~ZION_PREFS_SKIP_ONCE;
+        if (zion_prefs_save(&s_prefs) != ESP_OK)
+            ESP_LOGE(TAG, "ZION skip-once consumption failed; stay in launcher");
+    }
+
     // Test-only USB Serial/JTAG control is compiled out of production builds.
     // It starts only after carve ensure + slot scan, and only boots validated slots.
-#if CONFIG_META_E2E_TEST_CONTROL
-    meta_e2e_control_start(s_slots);
-#endif
     // 派生态回填进 carve 记录(无变化不写;全新设备无记录 → no-op)。scan 是
     // 记录状态缓存的事实源:迁移种子 EMPTY、安装后 VALID 都在此落盘(§4.3)。
     {
@@ -1357,7 +1600,8 @@ void app_main(void)
     // 用户决策①(中断续连):上次安装会话未正常离店(上传中途断电/崩溃)→
     // 自动恢复 STA + install 服务与持久化 token,手机重发 prepare 免重扫 QR
     // (进度由手机呈现,设备留在列表页;carve 状态由 ensure 权威恢复)。
-    if (meta_install_resume_pending()) {
+    const bool install_pending = meta_install_resume_pending();
+    if (install_pending) {
         ESP_LOGW(TAG, "install resume: restoring WiFi + LAN install service");
         (void)meta_install_token_start();
         // token_start 可能刚从 NVS 恢复 token:闲置期限从此刻起算,
@@ -1370,10 +1614,32 @@ void app_main(void)
         }
     }
 
+    const esp_reset_reason_t reset = esp_reset_reason();
+    const int mv_key = bsp_button_read_mv();
+    if (mv_key >= 0 && mv_key < 2300) s_boot_cancel = true;
+    s_autostart = zion_should_autostart((s_prefs.flags & ZION_PREFS_ENABLED) != 0,
+        zion_default_slot() >= 0, reset == ESP_RST_POWERON || reset == ESP_RST_EXT ||
+        reset == ESP_RST_USB || reset == ESP_RST_JTAG,
+        s_boot_cancel || s_skip_once, install_pending);
+    s_autostart_deadline = esp_timer_get_time() + 1800000;
+    if (s_autostart) snprintf(s_notice, sizeof(s_notice), "即将自启，任意键取消");
+    else if (reset == ESP_RST_PANIC || reset == ESP_RST_TASK_WDT || reset == ESP_RST_INT_WDT || reset == ESP_RST_WDT)
+        snprintf(s_notice, sizeof(s_notice), "恢复：玩法异常复位 %d", (int)reset);
+    else if ((s_prefs.flags & ZION_PREFS_ENABLED) && zion_default_slot() < 0)
+        snprintf(s_notice, sizeof(s_notice), "默认玩法已变更，请重选");
+    ESP_LOGI(TAG, "ZION_POLICY reset=%d default=%d auto=%d held=%d", (int)reset,
+             zion_default_slot(), s_autostart, s_boot_cancel);
     if (bsp_lvgl_lock(1000)) {
         page_list_build();
         bsp_lvgl_unlock();
     }
+    if (xTaskCreate(zion_ui_worker, "zion_ui", 6144, NULL, 3, NULL) != pdPASS) {
+        s_autostart = false;
+        ESP_LOGE(TAG, "ZION UI worker allocation failed");
+    }
+#if CONFIG_META_E2E_TEST_CONTROL
+    meta_e2e_control_start(s_slots);
+#endif
     ESP_LOGI(TAG, "就绪:APP 槽=%d free=%uB s0=%d s1=%d s2=%d",
              s_list_n, (unsigned)meta_carve_free(meta_carve_flash_carve()),
              s_slots[0].state, s_slots[1].state, s_slots[2].state);

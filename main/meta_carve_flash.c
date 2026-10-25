@@ -13,6 +13,7 @@
 #include "meta_carve_flash.h"
 
 #include <string.h>
+#include <stdlib.h>
 
 #include "esp_flash.h"
 #include "esp_partition.h"
@@ -27,6 +28,52 @@ static meta_carve_t s_carve;        // 规范 carve
 static uint32_t     s_seq;          // 最新记录 seq
 static bool         s_have_record;  // 规范 carve 已 committed
 static bool         s_active;       // ensure 已执行
+/* The single storage worker may release scratch between transactions while
+ * HTTPS owns the heap. Persistent state and returned carve pointers stay live.
+ * No storage API may run concurrently with release (same single-worker rule). */
+#if CONFIG_ZION_592_INSTALL
+typedef struct {
+    meta_carve_t *in,*work;
+    uint8_t (*live)[META_PT_SIZE],(*ref)[META_PT_SIZE],(*io)[META_CARVE_REC_SIZE];
+    meta_carve_rec_t *best,*tmp;
+    uint8_t (*launcher_table)[META_PT_SIZE];
+} carve_workspace_t;
+_Static_assert(sizeof(meta_carve_t)<=META_CARVE_REC_SIZE,"carve scratch bound");
+_Static_assert(sizeof(meta_carve_rec_t)<=2*META_CARVE_REC_SIZE,"record scratch bound");
+#ifndef META_CARVE_WORKSPACE_CALLOC
+#define META_CARVE_WORKSPACE_CALLOC calloc
+#endif
+static carve_workspace_t *s_workspace;
+void meta_carve_flash_workspace_release(void) {
+    if(!s_workspace) return;
+    free(s_workspace->in);free(s_workspace->work);
+    free(s_workspace->live);free(s_workspace->ref);free(s_workspace->io);
+    free(s_workspace->best);free(s_workspace->tmp);free(s_workspace->launcher_table);
+    free(s_workspace);s_workspace=NULL;
+}
+static bool workspace_acquire(void) {
+    if(s_workspace) return true;
+    s_workspace=META_CARVE_WORKSPACE_CALLOC(1,sizeof(*s_workspace));
+    if(!s_workspace) return false;
+    /* Separate <=8 KiB allocations tolerate heap fragmentation left by TLS. */
+#define CARVE_ALLOC(field) do { \
+    s_workspace->field=META_CARVE_WORKSPACE_CALLOC(1,sizeof(*s_workspace->field)); \
+    if(!s_workspace->field) {meta_carve_flash_workspace_release();return false;} \
+} while(0)
+    CARVE_ALLOC(in);CARVE_ALLOC(work);CARVE_ALLOC(live);CARVE_ALLOC(ref);
+    CARVE_ALLOC(io);CARVE_ALLOC(best);CARVE_ALLOC(tmp);CARVE_ALLOC(launcher_table);
+#undef CARVE_ALLOC
+    return true;
+}
+#define s_in (*s_workspace->in)
+#define s_work (*s_workspace->work)
+#define s_live (*s_workspace->live)
+#define s_ref (*s_workspace->ref)
+#define s_io (*s_workspace->io)
+#define s_best (*s_workspace->best)
+#define s_tmp (*s_workspace->tmp)
+#define launcher_table (*s_workspace->launcher_table)
+#else
 static meta_carve_t s_in;           // commit 入参快照(防调用方传 &s_best.carve
                                     // 被 load_best 覆写;见 commit 注释)
 static meta_carve_t s_work;         // M5 状态翻转/回收的副本(单线程,与 s_in 互斥复用)
@@ -40,9 +87,15 @@ static meta_carve_rec_t s_tmp;             // A/B 比较暂存
 
 // M5: 升级数据迁移 —— 在池内拷贝数据。
 // src/dst 必须同属一个 pool segment且对齐合法;失败 → 错误码。
+static uint8_t launcher_table[META_PT_SIZE];
+static bool workspace_acquire(void) {return true;}
+void meta_carve_flash_workspace_release(void) {}
+#endif
+
 esp_err_t meta_carve_flash_data_copy(uint32_t src_offset, uint32_t size,
                                      uint32_t dst_offset)
 {
+    if(!workspace_acquire()) return ESP_ERR_NO_MEM;
     if (!size) return ESP_ERR_INVALID_SIZE;
     if (size % META_CARVE_SIZE_GRANULE != 0) return ESP_ERR_INVALID_SIZE;  // 擦除粒度
     const meta_pool_desc_t *p = meta_carve_pool();
@@ -97,6 +150,7 @@ esp_err_t meta_carve_flash_data_copy(uint32_t src_offset, uint32_t size,
 
 void meta_carve_flash_test_reset(void)
 {
+    meta_carve_flash_workspace_release();
     memset(&s_carve, 0, sizeof(s_carve));
     s_seq = 0;
     s_have_record = false;
@@ -130,7 +184,7 @@ bool meta_carve_flash_has_record(void)
 // readonly 分区,其余放行。factory 范围与 meta_carve.c FIXED[0] 同步改。
 
 #define CARVE_FACTORY_OFFSET 0x10000u
-#define CARVE_FACTORY_END    (CARVE_FACTORY_OFFSET + 0x170000u)   // 0x180000
+#define CARVE_FACTORY_END    (CARVE_FACTORY_OFFSET + META_FACTORY_SIZE)
 
 static esp_err_t carve_region_protected(void *arg, size_t start_addr, size_t size)
 {
@@ -189,6 +243,7 @@ void meta_carve_flash_reboot_clear(void)
 
 esp_err_t meta_carve_flash_table_write(const uint8_t table[META_PT_SIZE])
 {
+    if(!workspace_acquire()) return ESP_ERR_NO_MEM;
     if (!table) return ESP_ERR_INVALID_ARG;
     // 分区表扇区(0x8000)在 IDF 危险写保护清单内(bootloader / 分区表 /
     // 运行中 app 镜像区):esp_flash_* 顶层的 CHECK_WRITE_ADDRESS 命中即
@@ -273,10 +328,28 @@ static bool load_best(meta_carve_rec_t *best, meta_carve_rec_t *tmp, bool *from_
 }
 
 // ---- 提交 -----------------------------------------------------------------
+esp_err_t meta_carve_flash_reload(void)
+{
+    if(!workspace_acquire()) return ESP_ERR_NO_MEM;
+    bool have=false;
+    for(uint32_t i=0;i<2;i++) {
+        esp_err_t err=store_sector_read(i);
+        if(err!=ESP_OK) return err;
+        if(!meta_carve_rec_decode(s_io,&s_tmp) || !meta_carve_rec_validate(&s_tmp)) continue;
+        if(!have || (int32_t)(s_tmp.seq-s_best.seq)>0) {s_best=s_tmp;have=true;}
+    }
+    if(!have) {
+        if(s_have_record) return ESP_ERR_NOT_FOUND;
+        memset(&s_carve,0,sizeof(s_carve));return ESP_OK;
+    }
+    s_carve=s_best.carve;s_seq=s_best.seq;s_have_record=true;s_active=true;
+    return ESP_OK;
+}
 
 
 esp_err_t meta_carve_flash_materialize_active(uint32_t active_play_id)
 {
+    if(!workspace_acquire()) return ESP_ERR_NO_MEM;
     if (!s_active || !s_have_record) return ESP_ERR_INVALID_STATE;
 
     // 0 = launcher view (APP only); non-zero = one Child Firmware's DATA.
@@ -292,6 +365,7 @@ esp_err_t meta_carve_flash_materialize_active(uint32_t active_play_id)
 
 esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize)
 {
+    if(!workspace_acquire()) return ESP_ERR_NO_MEM;
     if (!carve) return ESP_ERR_INVALID_ARG;
 
     // 入参快照:调用方可能传 &s_best.carve / &s_carve(set_dirty / archive),
@@ -354,7 +428,7 @@ esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize)
          * full carve. Child DATA is exposed only by
          * meta_carve_flash_materialize_active() immediately before boot.
          */
-        static uint8_t launcher_table[META_PT_SIZE];
+
         if (!meta_pt_from_carve_active(&s_in, 0, launcher_table)) {
             return ESP_ERR_INVALID_STATE;
         }
@@ -377,6 +451,7 @@ esp_err_t meta_carve_flash_set_valid(int slot, const char *name,
                                      uint32_t image_len,
                                      const uint8_t sha256[32])
 {
+    if(!workspace_acquire()) return ESP_ERR_NO_MEM;
     if (!s_active || !s_have_record) return ESP_ERR_INVALID_STATE;
     if (slot < 0 || slot >= (int)s_carve.count) return ESP_ERR_INVALID_ARG;
     s_work = s_carve;
@@ -394,6 +469,7 @@ esp_err_t meta_carve_flash_set_valid(int slot, const char *name,
 
 esp_err_t meta_carve_flash_remove(int slot)
 {
+    if(!workspace_acquire()) return ESP_ERR_NO_MEM;
     if (slot < 0 || slot >= (int)s_carve.count) return ESP_ERR_INVALID_ARG;
 
     meta_carve_t next = s_carve;
@@ -407,6 +483,7 @@ esp_err_t meta_carve_flash_remove(int slot)
  * on commit failure the existing APP and DATA bytes must remain untouched. */
 esp_err_t meta_carve_flash_remove_app_and_data(int slot)
 {
+    if(!workspace_acquire()) return ESP_ERR_NO_MEM;
     if (!s_active || slot < 0 || slot >= (int)s_carve.count) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -442,6 +519,7 @@ static void hex32_to_bin(const char hex[META_SHA256_HEX_LEN], uint8_t out[32])
 
 esp_err_t meta_carve_flash_sync_states(const meta_slot_info_t *slots, int count)
 {
+    if(!workspace_acquire()) return ESP_ERR_NO_MEM;
     if (!s_active || !slots) return ESP_ERR_INVALID_ARG;
     if (count < 0 || count > META_SLOT_COUNT) return ESP_ERR_INVALID_ARG;
     if (!s_have_record) return ESP_OK;                  // 全新设备:尚无记录
@@ -518,6 +596,7 @@ static void cred_relocate(void)
 
 esp_err_t meta_carve_flash_ensure(void)
 {
+    if(!workspace_acquire()) return ESP_ERR_NO_MEM;
     if (s_active) return ESP_OK;
 
     // 首步:换掉 region_protected(见上方注释)。之后任何 flash 写检查都不再
@@ -541,7 +620,7 @@ esp_err_t meta_carve_flash_ensure(void)
          * boot.  app_main is always the launcher, so repair the live table to
          * launcher view rather than restoring the full carve table.
          */
-        static uint8_t launcher_table[META_PT_SIZE];
+
         if (!meta_pt_from_carve_active(&s_best.carve, 0, launcher_table)) {
             ESP_LOGE(TAG, "cannot materialize launcher runtime table");
             return ESP_FAIL;
@@ -607,6 +686,7 @@ esp_err_t meta_carve_flash_ensure(void)
 
 esp_err_t meta_carve_flash_set_dirty(uint32_t play_id)
 {
+    if(!workspace_acquire()) return ESP_ERR_NO_MEM;
     if (!s_active || !s_have_record) return ESP_ERR_INVALID_STATE;
     if (play_id == 0) return ESP_ERR_INVALID_ARG;
 
@@ -628,6 +708,7 @@ esp_err_t meta_carve_flash_set_dirty(uint32_t play_id)
 esp_err_t meta_carve_flash_mark_dirty_selected(const meta_carve_data_key_t *keys,
                                                uint8_t n_keys)
 {
+    if(!workspace_acquire()) return ESP_ERR_NO_MEM;
     if (!s_active || !s_have_record) return ESP_ERR_INVALID_STATE;
     if (n_keys > 0 && !keys) return ESP_ERR_INVALID_ARG;
 
@@ -647,6 +728,7 @@ esp_err_t meta_carve_flash_mark_dirty_selected(const meta_carve_data_key_t *keys
 
 esp_err_t meta_carve_flash_archive_slot_and_data(int slot)
 {
+    if(!workspace_acquire()) return ESP_ERR_NO_MEM;
     if (!s_active || !s_have_record) return ESP_ERR_INVALID_STATE;
     if (slot < 0 || slot >= (int)s_carve.count) return ESP_ERR_INVALID_ARG;
 
@@ -669,6 +751,7 @@ esp_err_t meta_carve_flash_archive_slot_and_data(int slot)
 
 esp_err_t meta_carve_flash_erase_data(uint32_t play_id, const char *label)
 {
+    if(!workspace_acquire()) return ESP_ERR_NO_MEM;
     if (!s_active || !s_have_record) return ESP_ERR_INVALID_STATE;
     if (play_id == 0) return ESP_ERR_INVALID_ARG;
 
@@ -704,6 +787,7 @@ esp_err_t meta_carve_flash_erase_data(uint32_t play_id, const char *label)
 
 static uint32_t arc_prepare_locked(uint32_t target)
 {
+    if(!workspace_acquire()) return 0;
     if (!s_active || !s_have_record || target == 0) return 0;
 
     s_work = s_carve;

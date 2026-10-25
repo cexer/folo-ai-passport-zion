@@ -1,0 +1,14 @@
+{
+  "converter": "lv_font_conv 1.5.3",
+  "size": 14,
+  "bpp": 1,
+  "characters": 6873,
+  "source_sha256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
+  "source_axis_defaults": {
+    "wght": 100.0
+  },
+  "resolved_weight": 600,
+  "source_url": "https://github.com/google/fonts/tree/main/ofl/notosanssc",
+  "license": "SIL OFL 1.1",
+  "c_sha256": "8f6194e0274138a309cf5fad8dbd2ad656a37d68803a303a2b1b19cd58896543"
+}

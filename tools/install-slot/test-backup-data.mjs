@@ -10,11 +10,11 @@
 //      2026-10-04 曾在此断链(手机发 "records",设备只认 "data")——
 //      没有 UI 接线时两端各自"正确",联调才爆;本测试把断链钉成不可能。
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const bk = await import(path.join(ROOT, "install-slot", "backup-data.js"));
+const bk = await import(pathToFileURL(path.join(ROOT, "install-slot", "backup-data.js")).href);
 
 // ── 1. MPTB 往返:头 + 两条记录字节级一致 ─────────────────────────────────
 {

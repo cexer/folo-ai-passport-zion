@@ -1,6 +1,6 @@
 // main/meta_store_json.c —— 实现见头文件注释。
 // 解析器为手写扫描:skip_ws → value;value 按首字符分派;string 支持 \" \\ \/ \b \f
-// \n \r \t 与 \uXXXX(后随代理对不特殊处理——契约键/值均为 BMP 内 ASCII);
+// \n \r \t 与 \uXXXX(含代理对,解码为严格 UTF-8);
 // object/array 跳过用深度计数,不建结构。全部操作带显式剩余长度,杜绝越界读。
 #include "meta_store_json.h"
 
@@ -16,6 +16,17 @@ typedef struct {
 } cur_t;
 
 static size_t remain(const cur_t *c) { return c->len - c->pos; }
+static bool hex4(cur_t *c,uint32_t *value) {
+    if(remain(c)<4) return false;
+    uint32_t v=0;
+    for(unsigned i=0;i<4;i++) {
+        unsigned char ch=(unsigned char)c->p[c->pos++];
+        unsigned digit=ch>='0'&&ch<='9'?ch-'0':ch>='a'&&ch<='f'?ch-'a'+10:ch>='A'&&ch<='F'?ch-'A'+10:16;
+        if(digit>15) return false;
+        v=(v<<4)|digit;
+    }
+    *value=v;return true;
+}
 
 static char peek(const cur_t *c)
 {
@@ -72,19 +83,22 @@ static bool scan_string(cur_t *c, char *out, size_t out_sz, size_t *out_len)
             case 'n':  dec = '\n'; break;
             case 'r':  dec = '\r'; break;
             case 't':  dec = '\t'; break;
-            case 'u':
-                // 契约值均为 ASCII;跳过 4 位 hex 即可,不真正解码。
-                if (remain(c) < 4) return false;
-                for (int i = 0; i < 4; i++) {
-                    const char h = c->p[c->pos + i];
-                    const bool hex = (h >= '0' && h <= '9') || (h >= 'a' && h <= 'f')
-                                  || (h >= 'A' && h <= 'F');
-                    if (!hex) return false;
-                }
-                c->pos += 4;
-                // 以 '?' 占位(仅键/短值路径会命中真实解码需求,当前契约无 \u 值)
-                dec = '?';
-                break;
+            case 'u': {
+                uint32_t cp;
+                if(!hex4(c,&cp) || !cp) return false;
+                if(cp>=0xd800 && cp<=0xdbff) {
+                    if(remain(c)<6 || c->p[c->pos++]!='\\' || c->p[c->pos++]!='u') return false;
+                    uint32_t low;if(!hex4(c,&low) || low<0xdc00 || low>0xdfff) return false;
+                    cp=0x10000+((cp-0xd800)<<10)+(low-0xdc00);
+                } else if(cp>=0xdc00 && cp<=0xdfff) return false;
+                char utf8[4];unsigned n=0;
+                if(cp<0x80) utf8[n++]=(char)cp;
+                else if(cp<0x800) {utf8[n++]=(char)(0xc0|(cp>>6));utf8[n++]=(char)(0x80|(cp&63));}
+                else if(cp<0x10000) {utf8[n++]=(char)(0xe0|(cp>>12));utf8[n++]=(char)(0x80|((cp>>6)&63));utf8[n++]=(char)(0x80|(cp&63));}
+                else {utf8[n++]=(char)(0xf0|(cp>>18));utf8[n++]=(char)(0x80|((cp>>12)&63));utf8[n++]=(char)(0x80|((cp>>6)&63));utf8[n++]=(char)(0x80|(cp&63));}
+                if(out) {if(w+n>=out_sz) return false;memcpy(out+w,utf8,n);}
+                w+=n;continue;
+            }
             default:
                 return false;
             }

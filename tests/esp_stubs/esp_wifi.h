@@ -6,9 +6,9 @@
 
 /* WiFi power-save modes (esp_wifi_types.h, IDF 5.x). */
 typedef enum {
-    WIFI_PS_MIN_MODEM = 0, /* 默认:DTIM 间隔休眠,下行吞吐受限 */
+    WIFI_PS_NONE = 0,
+    WIFI_PS_MIN_MODEM, /* Match ESP-IDF 5.5.3 numeric values. */
     WIFI_PS_MAX_MODEM,
-    WIFI_PS_NONE,          /* 关省电:radio 常开,吞吐优先 */
 } wifi_ps_type_t;
 typedef struct {
     char ssid[32];
@@ -99,6 +99,8 @@ static inline esp_err_t esp_wifi_set_config(int interface, const wifi_config_t *
     (void)interface; (void)config; return ESP_OK;
 }
 static inline esp_err_t esp_wifi_set_ps(wifi_ps_type_t ps) { (void)ps; return ESP_OK; }
+static inline esp_err_t esp_wifi_get_ps(wifi_ps_type_t *ps) {*ps=WIFI_PS_MIN_MODEM;return ESP_OK;}
+static inline esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *record) {record->rssi=-42;record->primary=1;return ESP_OK;}
 static inline esp_err_t esp_wifi_start(void) { return ESP_OK; }
 static inline esp_err_t esp_wifi_stop(void) { return ESP_OK; }
 static inline esp_err_t esp_wifi_deinit(void) { return ESP_OK; }

@@ -379,15 +379,18 @@ function hexToBytes(hex) {
   assert.equal(unpackNameBlob(new Uint8Array(64).fill(0xff)), null, "erased sector has no blob");
   assert.equal(packNameBlob(""), null, "empty name must be rejected");
   assert.equal(packNameBlob("x".repeat(33)), null, "33-char name must be rejected");
-  assert.equal(packNameBlob("héllo"), null, "non-ASCII name must be rejected");
+  assert.equal(unpackNameBlob(packNameBlob("héllo")), "héllo", "UTF-8 roundtrip");
+  assert.equal(unpackNameBlob(packNameBlob("随身小智")), "随身小智");
+  assert.equal(packNameBlob("\ud800"), null, "unpaired surrogate rejected");
   assert.equal(packNameBlob("a\tb"), null, "control char must be rejected");
   console.log("PASS 5: invalid blobs rejected (magic/checksum/len/printable/truncated)");
 }
 
 // 6. sanitizeDisplayName:剔除非可打印 ASCII,截断到 32
 {
-  assert.equal(sanitizeDisplayName("héllo wörld"), "hllo wrld");
-  assert.equal(sanitizeDisplayName("雷达"), "");
+  assert.equal(sanitizeDisplayName("héllo wörld"), "héllo wörld");
+  assert.equal(sanitizeDisplayName("雷达"), "雷达");
+  assert.equal(new TextEncoder().encode(sanitizeDisplayName("智".repeat(12))).length, 30);
   assert.equal(sanitizeDisplayName("x".repeat(60)).length, NAME_MAX);
   assert.equal(sanitizeDisplayName(" Pocket Walkie "), " Pocket Walkie ");
   console.log("PASS 6: sanitizeDisplayName strips non-printable and truncates to 32");

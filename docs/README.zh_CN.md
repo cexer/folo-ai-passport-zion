@@ -1,5 +1,7 @@
 # FoloToy AI Passport
 
+Zion 用户请先看[使用说明](zion-user-guide.zh_CN.md)；实现及兼容性边界见 [Zion](zion.zh_CN.md)。
+
 [English](README.md) | 简体中文
 
 FoloToy AI Passport 是一个开放式可穿戴 AI 硬件，本仓库是这款 AI 硬件的开发基线。它不只展示"板子能运行什么"，还把开发应用所需的**硬件事实、稳定接口、资源边界、参考实现和验收方法**放在同一仓库中。

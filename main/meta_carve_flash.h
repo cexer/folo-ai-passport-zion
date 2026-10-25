@@ -38,6 +38,10 @@ bool meta_carve_flash_has_record(void);
 // materialize=true 时同步物化 0x8000 表(记录先写,表后写 —— 断电顺序安全)。
 esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize);
 
+/* Reconcile an uncertain commit from both A/B sectors. Any read error fails
+ * closed; no partition writes. Single storage worker only. */
+esp_err_t meta_carve_flash_reload(void);
+
 // §4.5 Remove:从规范 carve 移除下标 slot(压缩数组,数据不搬移 —— 擦除由
 // 网页重灌承担),提交记录并重新物化 0x8000 表(去条目)。
 // 不在 carve 的下标 → ESP_ERR_INVALID_ARG,不写任何东西。
@@ -108,3 +112,8 @@ esp_err_t meta_carve_flash_data_copy(uint32_t src_offset, uint32_t size,
 
 // host 测试专用:重置模块状态(模拟重启);真机不调用。
 void meta_carve_flash_test_reset(void);
+
+/* Single storage worker only: release transient buffers between transactions.
+ * Keeps canonical state stable; next storage transaction reacquires or returns
+ * NO_MEM. Normal launcher profile retains its original static allocation. */
+void meta_carve_flash_workspace_release(void);

@@ -1,5 +1,9 @@
 # FoloToy AI Passport
 
+Zion users: start with the [user guide](zion-user-guide.md); implementation and
+compatibility details are in [Zion](zion.md).
+The default build is the maintained Zion product with official mini-program installation.
+
 English | [简体中文](README.zh_CN.md)
 
 FoloToy AI Passport is open wearable AI hardware. This repository is the development baseline for the device. It keeps the **hardware facts, stable interfaces, resource boundaries, reference implementations, and validation methods** needed to build applications in one place.

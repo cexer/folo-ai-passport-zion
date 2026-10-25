@@ -20,11 +20,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const phone = await import(path.join(ROOT, "install-slot", "phone-install.js"));
+const phone = await import(pathToFileURL(path.join(ROOT, "install-slot", "phone-install.js")).href);
 assert.equal(phone.assertPhoneArchiveVersion({
   manifest_version: 2, kind: "meta-pass-storage-snapshot",
 }).kind, "meta-pass-storage-snapshot");
@@ -158,8 +158,8 @@ assert.match(restoreDispatchSource, /restoreStorageSnapshotArchive\(device, rest
 assert.match(usbPage, /不再接受旧 APP\+DATA v2 逻辑归档/,
   "USB must reject retired APP+DATA v2 archives");
 console.log("PASS USB historical v1.1 restore is fixed-slot-only and v2 snapshot restore uses sequential verification");
-const { SLOT_GEOMETRY } = await import(path.join(ROOT, "install-slot", "store-analyze.js"));
-const dyn = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
+const { SLOT_GEOMETRY } = await import(pathToFileURL(path.join(ROOT, "install-slot", "store-analyze.js")).href);
+const dyn = await import(pathToFileURL(path.join(ROOT, "install-slot", "dynslot-pool.js")).href);
 
 // Test-only DATA resizing must require an explicit profile; ordinary installs stay unchanged.
 assert.equal(phone.requestedDataSizeProfile(), null);
@@ -198,7 +198,7 @@ function buildMerged(app) {
   merged[0x8002] = 0x00; merged[0x8003] = 0x00;   // type=0 subtype=0(factory)
   const dv = new DataView(merged.buffer);
   dv.setUint32(0x8004, 0x10000, true);  // 分区 offset
-  dv.setUint32(0x8008, 0x170000, true); // 分区 size
+  dv.setUint32(0x8008, Math.max(0x170000, Math.ceil(app.length / 4096) * 4096), true);
   merged[0x10000] = 0xe9;
   merged.set(app, 0x10000);
   return merged;
@@ -602,7 +602,7 @@ const bridge = phone.createBridge("http://192.168.1.23", "a".repeat(32));
 {
   assert.equal(phone.pickDisplayName("ai-passport-9", "中文名称"), "ai-passport-9");
   assert.equal(phone.pickDisplayName("Pocket Intercom", "中文名称"), "Pocket Intercom");
-  assert.equal(phone.pickDisplayName("中文名称", 563), "play 563");
+  assert.equal(phone.pickDisplayName("中文名称", 563), "中文名称");
   assert.equal(phone.pickDisplayName(null, "x".repeat(40)), "x".repeat(32));   // 截断到 32
   assert.equal(phone.pickDisplayName(null, "", "ok-name"), "ok-name");         // 剥空才降级
   console.log("PASS 3f: pickDisplayName ASCII contract (≤32 printable, play <id> fallback)");
@@ -986,7 +986,7 @@ function bigFixtures() {
   assert.equal(pre.ok, true, JSON.stringify(pre));
   assert.equal(pre.offer.name, "My-Radar-01");
   const pre2 = await phone.prepareImage(meta, 0, {}, "雷达Name");
-  assert.match(pre2.offer.name, /^[\x20-\x7e]{1,32}$/, "sanitized to printable ASCII ≤32");
+  assert.equal(pre2.offer.name, "雷达Name", "UTF-8 name preserved");
   console.log("PASS 8e: user-edited install name wins; non-ASCII stripped");
 }
 // 8f. 设备显示名链:社区 slug(community-*)降级,英文标题优先(真机:满屏 community- 名)。

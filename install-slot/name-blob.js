@@ -41,40 +41,31 @@ function isPrintableAscii(b) {
 }
 
 // 打包显示名为紧凑 blob 字节;name 非法(非字符串/空/超 32/含非可打印 ASCII)返回 null。
+const encoder = new TextEncoder();
+const decoder = new TextDecoder('utf-8', {fatal: true});
+function validText(text) {
+  return !/[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(text);
+}
 export function packNameBlob(name) {
-  if (typeof name !== "string" || name.length === 0 || name.length > NAME_MAX) return null;
-  const out = new Uint8Array(6 + name.length);
-  out.set(MAGIC, 0);
-  out[4] = name.length;
-  for (let i = 0; i < name.length; i++) {
-    const b = name.charCodeAt(i);
-    if (!isPrintableAscii(b)) return null;
-    out[5 + i] = b;
-  }
-  let x = 0;
-  for (let i = 4; i < 5 + name.length; i++) x ^= out[i];
-  out[5 + name.length] = x;
+  if (typeof name !== 'string' || !name || !validText(name)) return null;
+  const bytes = encoder.encode(name);
+  if (bytes.length > NAME_MAX) return null;
+  const out = new Uint8Array(6 + bytes.length);
+  out.set(MAGIC); out[4] = bytes.length; out.set(bytes, 5);
+  let xor = out[4];
+  for (const byte of bytes) xor ^= byte;
+  out[out.length - 1] = xor;
   return out;
 }
-
-// 解包紧凑 blob;任何校验失败(魔术/长度/可打印性/checksum)返回 null(视为无 blob)。
 export function unpackNameBlob(buf) {
-  if (!buf || buf.length < 6) return null;
-  for (let i = 0; i < 4; i++) {
-    if (buf[i] !== MAGIC[i]) return null;
-  }
-  const len = buf[4];
-  if (len < 1 || len > NAME_MAX) return null;
-  if (buf.length < 6 + len) return null;
-  let x = buf[4];
-  for (let i = 5; i < 5 + len; i++) {
-    if (!isPrintableAscii(buf[i])) return null;
-    x ^= buf[i];
-  }
-  if (buf[5 + len] !== x) return null;
-  let s = "";
-  for (let i = 5; i < 5 + len; i++) s += String.fromCharCode(buf[i]);
-  return s;
+  if (!buf || buf.length < 6 || !MAGIC.every((byte, i) => buf[i] === byte)) return null;
+  const length = buf[4];
+  if (length < 1 || length > NAME_MAX || buf.length < 6 + length) return null;
+  let xor = length;
+  for (let i = 5; i < 5 + length; ++i) xor ^= buf[i];
+  if (xor !== buf[5 + length]) return null;
+  try { const text = decoder.decode(buf.subarray(5, 5 + length)); return validText(text) ? text : null; }
+  catch { return null; }
 }
 
 // 打包到 40B MNAM 窗口并右对齐:窗口最后一字节是 checksum,前部保持 0xFF。
@@ -105,11 +96,12 @@ export function unpackNameBlobTail(buf) {
 
 // UI 预填清洗:剔除非可打印 ASCII,截断到 NAME_MAX;剔完为空返回 ""(调用方不写 blob)。
 export function sanitizeDisplayName(s) {
-  let out = "";
-  for (const ch of String(s ?? "")) {
-    const b = ch.codePointAt(0);
-    if (b >= 0x20 && b <= 0x7e) out += ch;
-    if (out.length >= NAME_MAX) break;
+  let out = '', size = 0;
+  for (const ch of String(s ?? '')) {
+    if (!validText(ch)) continue;
+    const count = encoder.encode(ch).length;
+    if (size + count > NAME_MAX) break;
+    out += ch; size += count;
   }
   return out;
 }

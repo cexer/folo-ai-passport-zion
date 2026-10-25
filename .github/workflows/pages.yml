@@ -1,11 +1,6 @@
 name: Deploy install-slot to GitHub Pages
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "install-slot/**"
-      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:

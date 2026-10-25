@@ -1,0 +1,3 @@
+# Optional measurement profile; validate TLS/heap before adopting as a default.
+CONFIG_LWIP_TCP_WND_DEFAULT=16384
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=16

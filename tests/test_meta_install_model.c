@@ -126,7 +126,7 @@ static void test_parse_rejects(void)
     assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // 短 sha
     assert(mutated_offer(&mu, "\"name\": \"ai-passport-9\"",
                          "\"name\": \"AI Passport 汉字名\""));
-    assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // 非 ASCII 名
+    assert(meta_install_model_parse(mu.buf, mu.len, &m));         // UTF-8 name
     assert(mutated_offer(&mu, "\"name\": \"ai-passport-9\"",
                          "\"name\": \"abcdefghijklmnopqrstuvwxyz0123456789\""));
     assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // 超 32 字节名

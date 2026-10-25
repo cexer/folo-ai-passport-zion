@@ -21,6 +21,9 @@
 #include "meta_store_install.h"
 
 static const char *TAG = "meta_e2e";
+void zion_key_inject(int button, int event);
+void zion_test_state(void);
+esp_err_t zion_test_default(int slot);
 static meta_slot_info_t *s_slots;
 
 static const char *slot_state_name(meta_slot_state_t state)
@@ -100,6 +103,21 @@ static void handle_command(char *line)
     if (strcmp(line, "E2E SLOTS") == 0) {
         response_slots();
         return;
+    }
+    if (strcmp(line, "E2E ZION_STATE") == 0) { zion_test_state(); return; }
+    int key = -1, event = -1, default_slot = -1;
+    if (sscanf(line, "E2E KEY %d %d", &key, &event) == 2) {
+        if (key < 0 || key > 2 || event < 0 || event > 3) { response_error("BAD_KEY"); return; }
+        zion_key_inject(key, event);
+        printf("{\"ok\":true,\"command\":\"KEY\"}\n"); fflush(stdout); return;
+    }
+    if (sscanf(line, "E2E DEFAULT %d", &default_slot) == 1) {
+        if (zion_test_default(default_slot) != ESP_OK) { response_error("DEFAULT_FAILED"); return; }
+        printf("{\"ok\":true,\"command\":\"DEFAULT\"}\n"); fflush(stdout); return;
+    }
+    if (strcmp(line, "E2E RESET") == 0) {
+        printf("{\"ok\":true,\"command\":\"RESET\"}\n"); fflush(stdout);
+        vTaskDelay(pdMS_TO_TICKS(100)); esp_restart(); return;
     }
     uint32_t play_id = 0;
     char extra = '\0';
