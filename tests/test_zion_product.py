@@ -4,7 +4,7 @@ import struct
 import sys
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
-from zion_product import NAME, APP_PROJECT_NAME, brand_app, name_window
+from zion_product import NAME, APP_PROJECT_NAME, brand_app, brand_merged, name_window
 
 class ProductTest(unittest.TestCase):
     def test_identity_limits(self):
@@ -27,6 +27,13 @@ class ProductTest(unittest.TestCase):
         checksum=0
         for value in window[start+4:-1]:checksum^=value
         self.assertEqual(checksum,window[-1])
+        merged=bytearray(b'\xff'*0x800000);merged[0x10000:0x10000+len(raw)]=raw
+        named,full=brand_merged(bytes(raw),bytes(merged))
+        self.assertEqual(named,branded)
+        self.assertEqual(full[0x10000:0x10000+len(named)],named)
+        self.assertEqual(full[:0x10000],merged[:0x10000])
+        self.assertEqual(full[0x210000:],merged[0x210000:])
+        with self.assertRaises(ValueError):brand_merged(bytes(raw),b'\xff'*0x800000)
 
     def test_invalid_names(self):
         for name in ['', 'x'*33, 'x\n']:

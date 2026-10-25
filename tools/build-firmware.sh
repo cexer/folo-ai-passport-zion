@@ -98,7 +98,10 @@ python3 - <<'PYEOF'
 import hashlib
 import struct
 import json
+import sys
 from pathlib import Path
+sys.path.insert(0,str(Path.cwd()/"tools"))
+from zion_product import brand_merged
 
 version = "v" + json.loads(Path("build/project_description.json").read_text())["project_version"]
 
@@ -108,6 +111,8 @@ version = "v" + json.loads(Path("build/project_description.json").read_text())["
 app = (Path("build/FoloToy-AI-Passport.bin")).read_bytes()
 assert app[0] == 0xE9, "app magic"
 full = (Path("build/FoloToy-AI-Passport-full.bin")).read_bytes()
+app,full=brand_merged(app,full)
+Path("build/FoloToy-AI-Passport-full.bin").write_bytes(full)
 body = full[: 0x10000 + len(app)]
 assert body[0] == 0xE9 and body[0x8000:0x8000+2] == b"\xAA\x50", "head layout"
 

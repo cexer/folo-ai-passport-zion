@@ -423,8 +423,12 @@ import sys
 from pathlib import Path
 
 d = Path(sys.argv[1])
+sys.path.insert(0,str(Path.cwd()/"tools"))
+from zion_product import brand_merged
 app = (d / "FoloToy-AI-Passport.bin").read_bytes()
 full = (d / "FoloToy-AI-Passport-full.bin").read_bytes()
+app,full=brand_merged(app,full)
+(d / "FoloToy-AI-Passport-full.bin").write_bytes(full)
 body = full[: 0x10000 + len(app)]
 assert body[0] == 0xE9 and body[0x8000:0x8000 + 2] == b"\xAA\x50", "head layout"
 footer = b"MPUPV2\x00\x00" + struct.pack("<I", len(body)) + hashlib.sha256(body).digest()

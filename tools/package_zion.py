@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 import struct
 import verify_firmware
-from zion_product import NAME, APP_PROJECT_NAME, brand_app
+from zion_product import NAME, APP_PROJECT_NAME, brand_merged
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
@@ -41,10 +41,7 @@ assert 'zion_title_result' in map_text and b'Z592_TRANSFER_END pass=' in app, 'c
 assert 'meta_carve_flash_reload' in map_text and b'Z592_CLEANUP reclaimed=' in app, 'failed-install reconciliation/cleanup not linked'
 assert 'zion_official_mini_code' in map_text and b'kind=official-mini-code' in app and b'settings_marked=%d' in app, 'official Mini Program code/settings marker not linked'
 assert (root / 'assets/images/folo-mini-code-208.i1').read_bytes() in app, 'official Mini Program code pixels differ in artifact'
-app=brand_app(app)
-full = bytearray((build / 'FoloToy-AI-Passport-full.bin').read_bytes())
-full[0x10000:0x10000+len(app)]=app
-full=bytes(full)
+app,full=brand_merged(app,(build / 'FoloToy-AI-Passport-full.bin').read_bytes())
 (build / 'FoloToy-AI-Passport-full.bin').write_bytes(full)
 body = full[:0x10000 + len(app)]
 hybrid = body + b'MPUPV2\0\0' + struct.pack('<I', len(body)) + hashlib.sha256(body).digest()

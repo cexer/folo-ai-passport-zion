@@ -30,3 +30,10 @@ def brand_app(app):
     result=bytearray(app[:image_len]);result.extend(b'\xff'*(at+4096-len(result)))
     result[-40:]=name_window()
     return bytes(result)
+
+def brand_merged(app,merged):
+    named=brand_app(app)
+    if len(merged)<0x210000 or merged[0x10000:0x10000+len(app)]!=app:
+        raise ValueError('Merged APP differs from the source application')
+    result=bytearray(merged);result[0x10000:0x10000+len(named)]=named
+    return named,bytes(result)
