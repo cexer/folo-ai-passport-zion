@@ -56,7 +56,8 @@ esp_err_t esp_flash_write(void *chip,const void *in,uint32_t at,uint32_t n) {
        (metadata_fault && (at==META_STORE_OFFSET || at==META_STORE_OFFSET+4096))) return ESP_FAIL;
     const uint8_t *b=in;
     uint32_t written=(torn_commit && at==META_STORE_OFFSET+4096 && n>128)?128:n;
-    for(uint32_t i=0;i<written;i++) flash[at+i]&=b[i];write_calls++;
+    for(uint32_t i=0;i<written;i++) flash[at+i]&=b[i];
+    write_calls++;
     if(final_attempted && final_fault && at>=META_STORE_OFFSET && at<META_STORE_OFFSET+8192 && n>128) {
         unsigned mode=final_fault;final_fault=0;
         if(mode==1) return ESP_FAIL; /* Entire record written, driver reports failure. */
