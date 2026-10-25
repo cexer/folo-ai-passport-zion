@@ -3,9 +3,11 @@ if(CONFIG_ZION_592_PROBE OR CONFIG_ZION_LAUNCHER)
         "ui_pixel_math.c" "../assets/fonts/zion_font_14.c"
         INCLUDE_DIRS "."
         REQUIRES bsp bt esp_event esp_netif esp_wifi esp_coex nvs_flash esp_timer
-                 esp_http_client esp_http_server app_update esp_partition spi_flash mbedtls)
+                 esp_http_client esp_http_server app_update esp_partition spi_flash mbedtls lwip)
     if(CONFIG_ZION_LAUNCHER)
         target_sources(${COMPONENT_LIB} PRIVATE "zion_launcher.c" "zion_menu.c" "zion_manage.c" "zion_prefs.c" "zion_policy.c" "zion_wifi.c" "zion_form.c" "../assets/images/folo_mini_code_208.c")
+        target_sources(${COMPONENT_LIB} PRIVATE "zion_portal.c" "zion_portal_net.c")
+        target_add_binary_data(${COMPONENT_LIB} "../assets/images/folo-mini-code-208.png" BINARY RENAME_TO zion_mini_png)
     endif()
     if(CONFIG_ZION_592_INSTALL)
         target_sources(${COMPONENT_LIB} PRIVATE "zion592_install.c" "zion592_image.c"

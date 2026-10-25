@@ -21,3 +21,4 @@ bool z592_begin(z592_transfer_t *transfer, const uint8_t *packet, size_t size);
 bool z592_chunk(z592_transfer_t *transfer, const uint8_t *packet, size_t size);
 bool z592_commit(z592_transfer_t *transfer, z592_request_t *request);
 bool z592_connection_usable(int connect_status, bool live_connection_found);
+uint8_t z592_session_state(uint8_t state,bool busy,bool online);

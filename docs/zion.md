@@ -2,6 +2,18 @@
 
 # Zion product architecture and compatibility
 
+## Publishable artifacts
+
+Production `tools/package_zion.py` runs automatically from `tools/build-zion.ps1`
+and exports `release/ZION-<version>-<firmware-sha-prefix>.bin`, `.sha256`, and
+`.json`. Every filename carries the version; the digest distinguishes rebuilds.
+Only the verified bootable hybrid and public metadata go into this tracked
+directory. Matching ELF/MAP/component images remain in ignored `dist/`; test-control
+builds never enter `release/`. An existing verified package can be exported with
+`python tools/zion_release.py --package dist/<version>/<elf-prefix>`.
+The BIN is for initial flashing at `0x0` or a compatible launcher upgrade flow;
+raw full-file flashing may reset stored settings.
+
 The [ZION source repository](https://github.com/cexer/folo-ai-passport-zion) derives
 from `alexwwang/meta-pass` at `3841005015352eeb73026a74dabb9f0c7bcabf4e`
 and the public FoloToy 592 v4 protocol. Identity is maintained in
@@ -38,10 +50,19 @@ leased for a transaction and released before the idle UI and after jobs; the
 canonical catalog remains valid. The optional generated QR is freed outside the
 idle installation page, including before download progress is displayed.
 
-Wi-Fi has one owner. Temporary WPA2 AP + HTTP configuration shares the service
+Wi-Fi has one owner. Temporary open AP + HTTP configuration shares the service
 with mini-program BLE provisioning. The form is acknowledged before its page
 triggers `/apply`; the HTTP handler does not disconnect its own response path.
 Only a successful connection is saved. The AP/server stops before downloads.
+AP-only DNS, HTTP probe redirects and DHCP option 114 request captive-portal
+opening; HTTPS is not intercepted. The result page polls `/status`, acknowledges
+success with `/finish`, and attempts the public entry used by the official
+[website module](https://ai-passport.folotoy.cn/_next/static/chunks/mini-program-DP_ytNE7.js).
+The open button and local PNG of the existing Mini Program code remain available
+when launch is blocked. A pure model bounds the success handoff to 10 seconds
+after acknowledgement, or 90 seconds without it; errors never start this timer.
+DNS task/socket shutdown precedes AP teardown. Packet parser and lifecycle have
+host tests; actual phone popup and WeChat launch remain phone acceptance checks.
 
 ## Layout and installation
 

@@ -14,6 +14,7 @@ run_static_checks() {
 
     python3 tools/check_repo.py
     python3 tests/test_zion_product.py
+    python3 tests/test_zion_release.py
     python3 tests/test_zion_flash_layout.py
     python3 tests/test_storage_four_goals_handoff_contract.py
     python3 tests/test_usb_backup_segmented_read.py
@@ -75,6 +76,8 @@ PY
     "${test_dir}/test_zion_menu"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain tests/test_zion_form.c main/zion_form.c -o "${test_dir}/test_zion_form"
     "${test_dir}/test_zion_form"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain tests/test_zion_portal.c main/zion_portal.c -o "${test_dir}/test_zion_portal"
+    "${test_dir}/test_zion_portal"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_zion_text.c main/zion_text.c -o "${test_dir}/test_zion_text"
     "${test_dir}/test_zion_text"
@@ -225,6 +228,8 @@ PY
     done
     if [[ -n "$_ck_bin" ]]; then
         echo "node --check: ${_ck_bin}"
+        "$_ck_bin" tests/test_zion_wifi_page.cjs
+        "$_ck_bin" tests/test_zion_wifi_result.cjs
         "$_ck_bin" --check tools/realdevice/browser_smoke.mjs
         "$_ck_bin" --check tools/realdevice/usb_web_e2e.mjs
         "$_ck_bin" --check tools/realdevice/usb_web_e2e_multi.mjs

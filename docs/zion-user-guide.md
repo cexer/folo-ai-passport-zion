@@ -30,6 +30,13 @@ use its own return command if supplied, or restart while holding Up. A child
 built with `zion_hook.h` can return and skip default startup once.
 Switching starts another firmware through reboot, not simultaneous execution.
 
+Starting a game also ends Zion's Bluetooth connection and installer service.
+The Mini Program may show disconnected and cannot reconnect to the Zion service
+while that game runs. Return to Zion by holding Up while switching on/restarting,
+wait for the launcher list, then reconnect in the Mini Program. The game may
+provide a different Bluetooth service of its own. Removing the explicit
+disconnect does not preserve a Bluetooth connection across the reboot.
+
 ## Deleting a game
 
 Long OK on the game, select Delete, then choose Confirm delete. The confirmation
@@ -46,14 +53,22 @@ possibly erased bytes. A later allocation erases its destination before reuse.
 ## Wi-Fi setup
 
 Select Settings, then Wi-Fi status/setup. The device opens a temporary
-password-protected hotspot. Connect the phone to the displayed name/password,
-keep the connection when the phone reports no Internet, and open
-`http://192.168.4.1` manually. Captive-portal auto-opening is not promised.
+open hotspot (no password). Connect the phone to the displayed name,
+keep the connection when the phone reports no Internet. A captive portal asks
+the phone to open the setup page automatically; if it does not, open
+`http://192.168.4.1` manually. Auto-opening depends on the phone's system settings.
 
-Enter a 2.4 GHz Wi-Fi name and password. The web page first acknowledges the
-settings, then triggers connection; look at the device for the result. Only a
-successful connection is saved. The temporary hotspot/server then stops; switch
-the phone back to its normal network. Change Wi-Fi clears Zion's saved network
+Nearby 2.4 GHz Wi-Fi networks are scanned automatically. Select a network;
+use Rescan to refresh the list. Enter the router password for an encrypted
+network; open networks need no password. The web page first acknowledges the
+settings, then triggers connection and polls the real result. Only a successful
+connection is saved. On success the page attempts to open the official WeChat
+Mini Program, with an Open button and an offline Mini Program code as fallbacks.
+The hotspot closes about 10 seconds after the page receives success (90 seconds
+if the page never acknowledges it); let the phone return to its normal network.
+Failed setup keeps the hotspot available for retry. Mini Program launch depends
+on the phone/browser/WeChat and has not been accepted on all phones.
+Change Wi-Fi clears Zion's saved network
 and starts a new setup session. Long OK returns to the list. Official
 mini-program BLE provisioning is also supported. Child firmware may have its
 own independent setup procedure.
@@ -79,6 +94,11 @@ This works even when the official server ignores HTTP Range. A sparse layout
 whose APP header is later in the source needs a larger prefix. Success is reported before it
 starts the installed game. Short OK returns when idle; long OK during an install
 opens a cancel confirmation. Temporary read timeouts have bounded retries.
+
+An installation failure does not clear saved Wi-Fi credentials. A new
+mini-program handshake reports the actual network readiness instead of the
+previous installation error; the device keeps that error on its result page.
+The phone mini-program may still require reconnecting its own session.
 
 Installation starts automatically; there is no extra approval prompt. The device
 shows the community title when the official download URL can be matched to public

@@ -151,8 +151,8 @@ static void render(void) {
         lv_obj_set_pos(content,10,44);
         if(!service.ap && service.online) snprintf(line,sizeof(line),"Wi-Fi 已连接\n\n配网完成\n返回列表即可安装玩法");
         else if(!service.ap && service.result!=ESP_OK) snprintf(line,sizeof(line),"配网热点启动失败\n\n%s\n\n也可从官方小程序配网",service.detail);
-        else snprintf(line,sizeof(line),"Wi-Fi：%s\n\n手机连接：\n%s\n密码：%s\n\n浏览器打开\n192.168.4.1\n也可从官方小程序配网",
-            service.online?"已连接":"未连接",service.ap?service.ap_name:"正在开启配网",service.ap?service.ap_password:"-");
+        else snprintf(line,sizeof(line),"Wi-Fi：%s\n\n手机连接：\n%s\n无需密码\n\n浏览器打开\n192.168.4.1\n也可从官方小程序配网",
+            service.online?"已连接":"未连接",service.ap?service.ap_name:"正在开启配网");
         LABEL(content,line);LABEL(footer,"短按OK返回  长按OK返回");
     } else {
         lv_obj_set_pos(content,10,48);

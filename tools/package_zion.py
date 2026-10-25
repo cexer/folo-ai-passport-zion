@@ -8,6 +8,7 @@ import shutil
 import struct
 import verify_firmware
 from zion_product import NAME, APP_PROJECT_NAME, brand_merged
+from zion_release import export_release
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
@@ -70,3 +71,5 @@ manifest = {'product': 'Zion', 'version': version, 'idf': idf_version,
             'files': {name: {'bytes': len(data), 'sha256': digest(data)} for name, data in files.items()}}
 (dest / 'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf8')
 print(f'Zion package: {dest.relative_to(root)}; app={len(app)}; ELF={digest(elf)}')
+if not test_control:
+    print(f'Zion release: {export_release(dest, root / "release").relative_to(root)}')

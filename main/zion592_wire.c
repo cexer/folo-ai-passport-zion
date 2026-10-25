@@ -1,4 +1,7 @@
 #include "zion592_wire.h"
+uint8_t z592_session_state(uint8_t state,bool busy,bool online) {
+    return !busy && state==4 ? (online?6:0) : state;
+}
 #include <string.h>
 bool z592_connection_usable(int status, bool live) {
     /* IDF NimBLE forwards remote-feature status through CONNECT even when the

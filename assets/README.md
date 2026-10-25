@@ -28,6 +28,9 @@ hash manifest are retained under `images/`. Convert using
 cannot be replaced by generating a URL QR. The source is FoloToy's public
 website; no separate asset redistribution license is stated there. Its rights
 are distinct from the repository code license. It contains no device secrets.
+The provisioning result page also embeds the existing 2,210-byte
+`images/folo-mini-code-208.png` for offline display, reusing the same code and
+source; no new image or external network request is needed for this fallback.
 
 - Use descriptive names that include the family, weight, size, and format when relevant.
 - Document the source, license, character range, conversion command, and expected destination.

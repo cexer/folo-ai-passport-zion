@@ -1,0 +1,25 @@
+#include "zion_portal.h"
+static const char wifi_result_page[] =
+"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+"<title>ZION 配网结果</title><style>body{max-width:26em;margin:2em auto;padding:1em;font:18px sans-serif;background:#101912;color:#d6e2b6}a{color:inherit}button,.button{display:block;box-sizing:border-box;width:100%;padding:12px;margin:12px 0;text-align:center;border:1px solid currentColor;text-decoration:none}img{width:208px;height:208px;background:white;display:block;margin:16px auto}</style>"
+"<h1 id=title>正在连接 Wi-Fi</h1><p id=status role=status>正在等待设备连接，请稍候…</p>"
+"<section id=success hidden><p>正在尝试打开微信小程序。若未跳转，请点下方按钮。</p>"
+"<a class=button id=open href='" ZION_MINI_PROGRAM_URL "'>打开微信小程序</a>"
+"<p>热点即将关闭，请让手机恢复原 Wi-Fi 或移动网络。也可保存下方小程序码，在微信中识别。</p>"
+"<img src=/mini-code.png alt='AI Passport 官方微信小程序码'><p>或在设备列表选择“安装玩法”，用微信扫码。</p></section>"
+"<p><a id=retry href=/>返回重新配网</a></p><noscript>请启用 JavaScript 查看连接结果，或查看设备屏幕。</noscript>"
+"<script src=/result.js></script>";
+static const char wifi_result_script[] =
+"const $=id=>document.getElementById(id);let handed=false;"
+"async function main(){try{let r=await fetch('/token',{cache:'no-store'});if(!r.ok)throw Error('配网会话已失效，请返回重试');const token=await r.text();"
+"for(let i=0;i<60;i++){r=await fetch('/status',{cache:'no-store'});if(!r.ok)throw Error('无法读取连接结果，请查看设备屏幕');const s=await r.json();"
+"if(s.state===0){if(!s.pending)throw Error('没有待连接的设置，请返回重新配网');"
+"r=await fetch('/apply',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'token='+token});"
+"if(!r.ok)throw Error('设备忙或会话已失效，请返回重试');}"
+"else if(s.state===2){if(handed)return;handed=true;$('title').textContent='配网成功';"
+"$('status').textContent='设备已连接 Wi-Fi，热点将在约 10 秒后关闭。';$('success').hidden=false;$('retry').hidden=true;"
+"try{await fetch('/finish',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'token='+token});}catch(e){}"
+"setTimeout(()=>{location.href=$('open').href;},800);return;}"
+"else if(s.state===3)throw Error('连接失败（Wi-Fi，代码 '+s.error+'），请返回检查密码并重试');"
+"await new Promise(r=>setTimeout(r,500));}throw Error('等待连接超时，请查看设备屏幕或返回重试');"
+"}catch(e){$('title').textContent='配网未完成';$('status').textContent=e.message;}}main();";

@@ -12,6 +12,12 @@ static void feed(z592_transfer_t *t, unsigned type, const uint8_t *data, unsigne
     }
 }
 int main(void) {
+    for(uint8_t state=0;state<=7;state++) {
+        assert(z592_session_state(state,true,true)==state);
+        assert(z592_session_state(state,true,false)==state);
+        assert(z592_session_state(state,false,true)==(state==4?6:state));
+        assert(z592_session_state(state,false,false)==(state==4?0:state));
+    }
     assert(z592_connection_usable(0,true));
     assert(z592_connection_usable(0x1a,true));
     assert(!z592_connection_usable(0,false));

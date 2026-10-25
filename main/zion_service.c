@@ -245,12 +245,20 @@ static void wifi_event(void *arg,esp_event_base_t base,int32_t id,void *data) {
         xEventGroupClearBits(s_wifi_bits,BIT0);
     }
 }
-static void scan_networks(void) {
-    if (esp_wifi_scan_start(NULL,true)!=ESP_OK) {state_set(ERROR,1);return;}
+static void scan_networks(bool web) {
     uint16_t count=16;
     wifi_ap_record_t *records=calloc(count,sizeof(*records));
-    if (!records) {state_set(ERROR,1);return;}
-    esp_err_t err=esp_wifi_scan_get_ap_records(&count,records);
+    esp_err_t err=records?esp_wifi_scan_start(NULL,true):ESP_ERR_NO_MEM;
+    if(err==ESP_OK) err=esp_wifi_scan_get_ap_records(&count,records);
+#if CONFIG_ZION_LAUNCHER
+    if(web) {
+        zion_wifi_scan_complete(records,err==ESP_OK?count:0,err);free(records);
+        ESP_LOGI(TAG,"ZION WEB_SCAN count=%u result=%s",err==ESP_OK?count:0,esp_err_to_name(err));return;
+    }
+#else
+    (void)web;
+#endif
+    if(err!=ESP_OK) {free(records);state_set(ERROR,1);return;}
     if (err==ESP_OK) for (uint16_t i=0;i<count;i++) {
         records[i].ssid[32]=0;
         uint8_t packet[35]={(uint8_t)records[i].authmode,(uint8_t)records[i].rssi,0};
@@ -328,8 +336,16 @@ static void network_worker(void *arg) {
     (void)arg;
     z592_request_t *job=calloc(1,sizeof(*job));
     if (!job) {state_set(ERROR,1);vTaskDelete(NULL);return;}
-    for (;;) if (xQueueReceive(s_jobs,job,portMAX_DELAY)==pdTRUE) {
-        if (job->type==9) scan_networks();
+    for (;;) {
+#if CONFIG_ZION_LAUNCHER
+        if(zion_wifi_ap_expired()) {
+            zion_wifi_ap_stop();
+            portENTER_CRITICAL(&s_lock);s_ap=false;s_generation++;portEXIT_CRITICAL(&s_lock);
+            ESP_LOGI(TAG,"ZION_PORTAL AP closed after success handoff");
+        }
+#endif
+        if(xQueueReceive(s_jobs,job,pdMS_TO_TICKS(250))!=pdTRUE) continue;
+        if (job->type==9) scan_networks(job->source_offset==1);
         else if (job->type==1) {
             /* HTTP configuration is asynchronous. Let its acknowledgement leave
              * the STA socket before reconfiguring that same interface. */
@@ -339,7 +355,8 @@ static void network_worker(void *arg) {
             (void)wifi_result;
 #endif
 #if CONFIG_ZION_LAUNCHER
-            if(s_wifi_online) {zion_wifi_ap_stop();s_ap=false;}
+            if(job->source_offset==1 && s_ap) zion_wifi_connect_result(wifi_result);
+            else if(s_wifi_online) {zion_wifi_ap_stop();s_ap=false;}
             portENTER_CRITICAL(&s_lock);if(job->source_offset==1) {s_busy=false;s_result=wifi_result;s_install_stage=0;snprintf(s_install_detail,sizeof(s_install_detail),"%s",esp_err_to_name(wifi_result));}s_generation++;portEXIT_CRITICAL(&s_lock);
 #endif
         }
@@ -489,6 +506,16 @@ static int info_access(uint16_t c,uint16_t h,struct ble_gatt_access_ctxt *ctx,vo
         .flash=0x800000,.netcfg=0x6bc000,.recovery=0x6c0000};
     memcpy(info.sn,s_name,sizeof(s_name));
     portENTER_CRITICAL(&s_lock);s_info_reads++;portEXIT_CRITICAL(&s_lock);
+    /* A new mini-program session queries INFO before STATUS. Installation
+     * failure is not Wi-Fi failure: keep the UI diagnosis, but rearm the wire
+     * readiness from the actual link rather than demanding credentials again.
+     * Do not alter a live transfer's terminal notification or an active job. */
+    uint8_t old_state=status_get().state;
+    uint8_t session_state=z592_session_state(old_state,s_busy,s_wifi_online);
+    if(session_state!=old_state) {
+        ESP_LOGI(TAG,"Z592 SESSION_REARM online=%u",s_wifi_online);
+        state_set(session_state,0);
+    }
     const esp_app_desc_t *desc=esp_app_get_description();
     ESP_LOGI(TAG,"Z592 INFO_READ wire_profile=592-v4 virtual_layout=1 local_layout=zion conn=%u stored=%u elf=%02x%02x%02x%02x",
         c,s_conn,desc->app_elf_sha256[0],desc->app_elf_sha256[1],desc->app_elf_sha256[2],desc->app_elf_sha256[3]);
@@ -784,5 +811,10 @@ bool zion_service_wifi(const char *ssid,const char *password) {
     bool queued=xQueueSend(s_jobs,&job,0)==pdTRUE;memset(&job,0,sizeof(job));
     if(!queued) {portENTER_CRITICAL(&s_lock);s_busy=false;s_generation++;portEXIT_CRITICAL(&s_lock);}
     return queued;
+}
+bool zion_service_scan(void) {
+    z592_request_t job={.type=9,.source_offset=1};
+    portENTER_CRITICAL(&s_lock);bool busy=s_busy || s_boot_at;portEXIT_CRITICAL(&s_lock);
+    return !busy && xQueueSend(s_jobs,&job,0)==pdTRUE;
 }
 #endif

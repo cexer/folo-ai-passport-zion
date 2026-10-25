@@ -2,6 +2,16 @@
 
 # Zion 正式项目架构与兼容性
 
+## 可发布产物
+
+`tools/build-zion.ps1` 自动调用 `tools/package_zion.py`，正式包同时导出为
+`release/ZION-<版本号>-<固件哈希前缀>.bin`、`.sha256` 和 `.json`。
+每个文件名都有版本号，哈希用于区分同版本的不同构建。此受版本控制的目录只保存已验证的
+可启动合并包和公开元数据；匹配的 ELF、MAP 和组件镜像仍留在忽略的 `dist/`，测试控制版
+不会进入 `release/`。也可导出现有已验证包：
+`python tools/zion_release.py --package dist/<版本号>/<ELF哈希前缀>`。
+BIN 用于从 `0x0` 首次刷写或兼容的启动器升级流程；直接全文件刷写可能重置已有配置。
+
 [ZION 开源仓库](https://github.com/cexer/folo-ai-passport-zion)派生自
 `alexwwang/meta-pass` 的 `3841005015352eeb73026a74dabb9f0c7bcabf4e`，
 并兼容公开的 FoloToy 592 v4 协议。包身份由 `zion-product.json` 维护；
@@ -34,9 +44,15 @@ flowchart LR
 存储临时缓冲只在事务中申请，空闲界面和每次作业后释放，规范目录状态继续有效。
 二维码按需生成，离开空闲安装页或进入下载进度时释放。
 
-Wi-Fi 只有一个管理者。临时 WPA2 热点和配置 HTTP 服务与小程序 BLE 配网共用
+Wi-Fi 只有一个管理者。临时开放热点和配置 HTTP 服务与小程序 BLE 配网共用
 同一服务。网页先确认收到表单，再由确认页触发 `/apply`，不会在发响应时直接
 切断自己的网络路径。成功联网后才保存，开始下载前关闭热点及 HTTP 服务。
+仅绑定 AP 的 DNS、HTTP 探测重定向及 DHCP option 114 引导手机弹出配网页，不拦截 HTTPS。
+结果页轮询 `/status`，通过 `/finish` 确认成功后，尝试使用
+[官网模块](https://ai-passport.folotoy.cn/_next/static/chunks/mini-program-DP_ytNE7.js)的公开入口唤起小程序。
+自动唤起被拦截时保留打开按钮，以及现有小程序码的本地 PNG。
+纯逻辑模型限制成功后热点保留时间：确认结果后约 10 秒，未确认约 90 秒；失败不启动此定时器。
+关闭 AP 前先停止 DNS 任务和套接字。报文解析和生命周期有主机测试；手机实际弹页和唤起微信仍需手机验收。
 
 ## 布局和安装
 
