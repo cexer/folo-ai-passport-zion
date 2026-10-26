@@ -10,21 +10,26 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define ROWS 6
+#if CONFIG_META_E2E_TEST_CONTROL
+bool zion_font_selftest(void);
+#endif
 LV_IMAGE_DECLARE(zion_official_mini_code);
 static zion_menu_t menu;
 static zion_service_state_t service;
 static meta_carve_t catalog;
 static int slots[META_CARVE_MAX_SLOTS],apps;
 static char versions[META_CARVE_MAX_SLOTS][17];
-static lv_obj_t *screen,*title,*content,*footer,*stats[3],*battery,*fill,*power;
+static lv_obj_t *screen,*title,*content,*footer,*footer_right,*stats[3],*battery,*fill,*power;
 static lv_obj_t *qr,*install_hint;
 static lv_obj_t *rows[ROWS],*names[ROWS],*details[ROWS],*marks[ROWS];
 /* Stable text storage avoids reallocating labels into TLS receive-buffer holes
  * while a download is active. All updates still run under the LVGL lock. */
 static char title_text[64],content_text[640],footer_text[96],power_text[12],install_hint_text[320];
+static char footer_right_text[48];
 static char stats_text[3][56],names_text[ROWS][96],details_text[ROWS][64];
 static void label_update(lv_obj_t *obj,char *buffer,size_t capacity,const char *value) {
     if(!strcmp(buffer,value) && lv_label_get_text(obj)==buffer) return;
@@ -94,7 +99,14 @@ static void render(void) {
     bool show_qr=zion_menu_install_qr(menu.page,service.busy,service.stage,install_result_dismissed);
     if(!show_qr) LABEL(install_hint,"");
     if(!show_qr && qr) {lv_obj_delete(qr);qr=NULL;}
-    if(menu.page==ZION_LIST) LABEL(footer,notice);
+    if(menu.page==ZION_LIST) {
+        lv_obj_set_width(footer,110);
+        LABEL(footer,"短按OK启动");LABEL(footer_right,"长按OK管理");
+        lv_obj_clear_flag(footer_right,LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_set_width(footer,220);LABEL(footer_right,"");
+        lv_obj_add_flag(footer_right,LV_OBJ_FLAG_HIDDEN);
+    }
     if(menu.page!=ZION_LIST) for(unsigned i=0;i<3;i++) label_update(stats[i],stats_text[i],sizeof(stats_text[i]),"");
     char line[640],meta[64];
     int def=zion_default_find(&catalog,&service.prefs);
@@ -119,7 +131,7 @@ static void render(void) {
         if(!apps) {LABEL(content,"尚未安装玩法");lv_obj_set_pos(content,12,44);}
         int y=zion_menu_row_y(shown?shown:1);
         row(4,y,"+ 安装玩法",NULL,menu.selected==apps);
-        row(5,y+38,"= 设置",NULL,menu.selected==apps+1);
+        row(5,y+38,"> 设置",NULL,menu.selected==apps+1);
         int installed=0;for(int i=0;i<apps;i++) if(catalog.slot[slots[i]].state==META_SLOT_VALID) installed++;
         snprintf(line,sizeof(line),"已安装%d款",installed);label_update(stats[0],stats_text[0],sizeof(stats_text[0]),line);
         snprintf(line,sizeof(line),"空闲%luK",(unsigned long)(meta_carve_free(&catalog)/1024));label_update(stats[1],stats_text[1],sizeof(stats_text[1]),line);
@@ -204,13 +216,24 @@ void zion_launcher_init(void) {
     install_hint=ui_pixel_label(screen,"",ZION_FONT,UI_INK2);lv_obj_set_pos(install_hint,10,230);lv_obj_set_width(install_hint,220);
     footer=ui_pixel_label(screen,"",ZION_FONT,UI_INK);lv_obj_set_pos(footer,10,296);
     lv_obj_set_width(footer,220);lv_label_set_long_mode(footer,LV_LABEL_LONG_DOT);
+    footer_right=ui_pixel_label(screen,"",ZION_FONT,UI_INK);lv_obj_set_pos(footer_right,120,296);
+    lv_obj_set_width(footer_right,110);lv_label_set_long_mode(footer_right,LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(footer_right,LV_TEXT_ALIGN_RIGHT,0);
     for(unsigned i=0;i<3;i++) {stats[i]=ui_pixel_label(screen,"",ZION_FONT,UI_INK2);lv_obj_set_pos(stats[i],10+(int)i*77,270);}
     battery=ui_pixel_panel_create_plain(screen,194,9,38,16,UI_SKY);
     lv_obj_set_style_pad_all(battery,0,0);
     fill=lv_obj_create(battery);lv_obj_remove_style_all(fill);lv_obj_set_pos(fill,1,1);lv_obj_set_size(fill,0,12);
     lv_obj_set_style_bg_opa(fill,LV_OPA_COVER,0);lv_obj_set_style_bg_color(fill,lv_color_hex(0x425637),0);
-    power=ui_pixel_label(battery,"?",ZION_FONT,UI_INK);lv_obj_set_style_text_font(power,&lv_font_unscii_8,0);lv_obj_center(power);
-    lv_screen_load(screen);bsp_lvgl_unlock();
+    power=ui_pixel_label(battery,"?",ZION_FONT,UI_INK);lv_obj_set_style_text_font(power,ZION_FONT_SMALL,0);lv_obj_center(power);
+    lv_screen_load(screen);
+    printf("ZION_FONTS ui_bpp=%u small_bpp=%u fallback_bpp=%u\n",
+        ((const lv_font_fmt_txt_dsc_t *)ZION_FONT->dsc)->bpp,
+        ((const lv_font_fmt_txt_dsc_t *)ZION_FONT_SMALL->dsc)->bpp,
+        ((const lv_font_fmt_txt_dsc_t *)zion_font_14.dsc)->bpp);
+#if CONFIG_META_E2E_TEST_CONTROL
+    if(!zion_font_selftest()) abort();
+#endif
+    bsp_lvgl_unlock();
     skip_once=service.skip_autostart;
     esp_reset_reason_t reason=esp_reset_reason();int mv=bsp_button_read_mv();
     startup_escape=mv>=0 && mv<2300;
@@ -224,6 +247,17 @@ void zion_launcher_init(void) {
     else if((service.prefs.flags&ZION_PREFS_ENABLED) && zion_default_find(&catalog,&service.prefs)<0)
         snprintf(notice,sizeof(notice),"默认玩法已变更，请重选");
     dirty=true;render();
+}
+void zion_launcher_fonts(void) {
+    if(!bsp_lvgl_lock(1000)) return;
+    printf("ZION_FONTS ui_bpp=%u small_bpp=%u fallback_bpp=%u\n",
+        ((const lv_font_fmt_txt_dsc_t *)ZION_FONT->dsc)->bpp,
+        ((const lv_font_fmt_txt_dsc_t *)ZION_FONT_SMALL->dsc)->bpp,
+        ((const lv_font_fmt_txt_dsc_t *)zion_font_14.dsc)->bpp);
+#if CONFIG_META_E2E_TEST_CONTROL
+    (void)zion_font_selftest();
+#endif
+    fflush(stdout);bsp_lvgl_unlock();
 }
 void zion_launcher_tick(void) {
     zion_service_get(&service);
@@ -249,17 +283,23 @@ void zion_launcher_tick(void) {
     if(dirty) render();
 }
 void zion_launcher_snapshot(void) {
-    int marker=-1,aligned=0,qr_visible=0,settings_marked=0;
+    int marker=-1,aligned=0,qr_visible=0,settings_marked=0,footer_fixed=0,footer_edge=0;
     if(bsp_lvgl_lock(200)) {
+        lv_obj_update_layout(screen);
         for(int i=0;i<4;i++) if(!lv_obj_has_flag(rows[i],LV_OBJ_FLAG_HIDDEN) && !lv_obj_has_flag(marks[i],LV_OBJ_FLAG_HIDDEN)) marker=i;
         aligned=lv_obj_get_x(rows[0])==lv_obj_get_x(rows[4]) && lv_obj_get_width(rows[0])==lv_obj_get_width(rows[4]);
         qr_visible=qr && !lv_obj_has_flag(qr,LV_OBJ_FLAG_HIDDEN) && lv_obj_get_width(qr)>0;
-        settings_marked=!strcmp(lv_label_get_text(names[5]),"= 设置");
+        settings_marked=!strcmp(lv_label_get_text(names[5]),"> 设置");
+        footer_edge=(int)(lv_obj_get_x(footer_right)+lv_obj_get_width(footer_right));
+        footer_fixed=menu.page==ZION_LIST && !strcmp(lv_label_get_text(footer),"短按OK启动") &&
+            !strcmp(lv_label_get_text(footer_right),"长按OK管理") && footer_edge==230 &&
+            lv_obj_get_style_text_align(footer_right,0)==LV_TEXT_ALIGN_RIGHT &&
+            !lv_obj_has_flag(footer_right,LV_OBJ_FLAG_HIDDEN);
         bsp_lvgl_unlock();
     }
-    printf("ZION_UI page=%d selected=%d apps=%d target=%d default=%d auto=%d busy=%d online=%d ap=%d free=%lu largest=%lu result=%d marker=%d aligned=%d qr=%d settings_marked=%d\n",
+    printf("ZION_UI page=%d selected=%d apps=%d target=%d default=%d auto=%d busy=%d online=%d ap=%d free=%lu largest=%lu result=%d marker=%d aligned=%d qr=%d settings_marked=%d footer_fixed=%d footer_right=%d\n",
         menu.page,menu.selected,apps,target(),zion_default_find(&catalog,&service.prefs),auto_boot,service.busy,service.online,service.ap,
-        (unsigned long)meta_carve_free(&catalog),(unsigned long)meta_carve_largest_gap(&catalog),(int)service.result,marker,aligned,qr_visible,settings_marked);
+        (unsigned long)meta_carve_free(&catalog),(unsigned long)meta_carve_largest_gap(&catalog),(int)service.result,marker,aligned,qr_visible,settings_marked,footer_fixed,footer_edge);
     fflush(stdout);
     if(menu.page==ZION_INSTALL) {
         printf("ZION_INSTALL_UI id=%u stage=%u percent=%u name=%s package=%lu installed=%lu known=%d reason=%s cleanup=%u cleanup_error=%d\n",

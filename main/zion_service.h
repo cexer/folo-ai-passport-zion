@@ -21,4 +21,5 @@ void zion_launcher_key(zion_input_t key);
 bool zion_launcher_cancel_auto(void);
 void zion_launcher_tick(void);
 void zion_launcher_snapshot(void);
+void zion_launcher_fonts(void);
 void zion_launcher_qr_pixels(void);

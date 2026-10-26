@@ -172,6 +172,7 @@ static void console_worker(void *arg) {
                 fflush(stdout);
             }
             if(!strcmp(line,"ZION STATE")) {portENTER_CRITICAL(&s_lock);s_snapshot_requested=true;portEXIT_CRITICAL(&s_lock);}
+            if(!strcmp(line,"ZION FONTS")) zion_launcher_fonts();
             if(!strcmp(line,"ZION RADIO")) radio_snapshot("query");
 #if CONFIG_META_E2E_TEST_CONTROL
             if(!strcmp(line,"ZION QR")) {portENTER_CRITICAL(&s_lock);s_qr_pixels_requested=true;portEXIT_CRITICAL(&s_lock);}
