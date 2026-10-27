@@ -8,6 +8,7 @@ typedef struct {
     bool busy,online,connected,ap,skip_autostart;
     unsigned state,error,percent,stage,generation;
     unsigned install_id;
+    int installed_slot; /* Exact completed installation, never current selection. */
     zion_install_info_t install;
     esp_err_t result;
     char detail[64],ap_name[33],ap_password[9];

@@ -120,8 +120,10 @@ static atomic_bool s_test_hold_boot;
 
 #if CONFIG_ZION_592_INSTALL
 static bool install_autoboot_allowed(void) {
-#if CONFIG_ZION_LAUNCHER && CONFIG_META_E2E_TEST_CONTROL
-    return !atomic_load(&s_test_hold_boot);
+#if CONFIG_ZION_LAUNCHER
+    /* Keep BLE and the manager alive for another installation. Only a device
+     * OK action may launch the completed app, including after protocol cmd 4. */
+    return false;
 #else
     return true;
 #endif
@@ -780,7 +782,7 @@ void zion_service_get(zion_service_state_t *v) {
     v->state=s_status.state;v->error=s_status.error;v->stage=s_install_stage;v->percent=s_percent;
     v->generation=s_generation;v->result=s_result;v->prefs=s_prefs;v->skip_autostart=s_skip_autostart;
 #if CONFIG_ZION_592_INSTALL
-    v->install=s_install_info;v->install_id=s_install_id;
+    v->install=s_install_info;v->install_id=s_install_id;v->installed_slot=s_installed_slot;
     if(v->busy && (v->stage==30 || v->stage==10) && v->install.elapsed_ms && s_install_update_us && now>s_install_update_us) {
         v->install.elapsed_ms+=(uint32_t)((now-s_install_update_us)/1000);
         uint32_t received=v->stage==30?v->install.received_bytes:v->install.layout_bytes;
